@@ -101,6 +101,13 @@ services:
     <<: *agent-base
     entrypoint: ["claude"]
 
+  auth-claude-setup-token:
+    <<: *agent-base
+    entrypoint: ["bash", "-lc"]
+    command: ["claude setup-token"]
+    volumes:
+      - ./data/homes/auth:/home/node:rw
+
 volumes:
   codex-home:
   gemini-home:

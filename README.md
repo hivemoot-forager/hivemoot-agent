@@ -148,6 +148,32 @@ docker compose run --rm auth-gemini
 
 Then set `AGENT_AUTH_MODE=subscription` in `.env`.
 
+### Claude: Long-Lived OAuth Token (Recommended for Headless)
+
+OAuth tokens from `auth-claude` expire after ~8 hours. For uninterrupted agent runs, use `claude setup-token` to generate a 1-year token:
+
+```bash
+docker compose run --rm auth-claude-setup-token
+# Copy the token (starts with sk-ant-oat01-*)
+printf '%s' "<token>" > secrets/claude-oauth-token
+chmod 600 secrets/claude-oauth-token
+```
+
+Then configure in `.env`:
+
+```bash
+AGENT_AUTH_MODE=subscription
+CLAUDE_CODE_OAUTH_TOKEN_FILE=/run/secrets/claude-oauth-token
+```
+
+**Requirements:**
+- Claude Pro or Max subscription
+- One-time interactive browser OAuth flow
+
+**Scope limitation:** The setup-token currently has `user:inference` scope only. If agents need usage API access (quota checks, model capabilities), the token may fail for those features. See [anthropics/claude-code#8938](https://github.com/anthropics/claude-code/issues/8938) for status.
+
+**Token renewal:** Tokens expire after ~1 year. Re-run `auth-claude-setup-token` to refresh.
+
 ## Adding Governance with Hivemoot Bot
 
 Agents can run standalone, but for full governance automation (proposal phases, voting, auto-merge), install the [Hivemoot Bot](https://github.com/hivemoot/hivemoot-bot) GitHub App on your target repo.

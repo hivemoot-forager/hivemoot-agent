@@ -110,7 +110,8 @@ for secret_var in \
   OPENAI_API_KEY \
   GOOGLE_API_KEY \
   GEMINI_API_KEY \
-  ANTHROPIC_API_KEY
+  ANTHROPIC_API_KEY \
+  CLAUDE_CODE_OAUTH_TOKEN
 do
   load_secret_from_file "$secret_var"
 done
@@ -374,11 +375,16 @@ case "$provider" in
     fi
 
     if [ "$claude_auth_mode" = "subscription" ]; then
-      if [ ! -d "${HOME}/.claude" ] && [ ! -d "${HOME}/.config/claude" ]; then
+      # Prefer long-lived OAuth token if available
+      if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+        export CLAUDE_CODE_OAUTH_TOKEN
+        log "Using Claude long-lived OAuth token (CLAUDE_CODE_OAUTH_TOKEN)"
+      elif [ ! -d "${HOME}/.claude" ] && [ ! -d "${HOME}/.config/claude" ]; then
         echo "Claude subscription credentials not found. Run: docker compose run --rm auth-claude" >&2
         exit 1
+      else
+        log "Using Claude subscription/cached auth (no API key required)"
       fi
-      log "Using Claude subscription/cached auth (no API key required)"
     fi
     log "Claude auth mode resolved to: ${claude_auth_mode}"
 
