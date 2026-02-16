@@ -154,6 +154,8 @@ OAuth tokens from `auth-claude` expire after ~8 hours. For uninterrupted agent r
 
 ```bash
 docker compose run --rm auth-claude-setup-token
+# Follow the browser OAuth flow
+# The service automatically creates ~/.claude.json with onboarding flag
 # Copy the token (starts with sk-ant-oat01-*)
 printf '%s' "<token>" > secrets/claude-oauth-token
 chmod 600 secrets/claude-oauth-token

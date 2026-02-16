@@ -71,6 +71,8 @@ x-agent-env: &agent-env
   GOOGLE_API_KEY_FILE: ${GOOGLE_API_KEY_FILE:-}
   GEMINI_API_KEY_FILE: ${GEMINI_API_KEY_FILE:-}
   ANTHROPIC_API_KEY_FILE: ${ANTHROPIC_API_KEY_FILE:-}
+  CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+  CLAUDE_CODE_OAUTH_TOKEN_FILE: ${CLAUDE_CODE_OAUTH_TOKEN_FILE:-}
   MAX_CONSECUTIVE_FAILURES: ${MAX_CONSECUTIVE_FAILURES:-5}
   HIVEMOOT_CLI_VERSION: ${HIVEMOOT_CLI_VERSION:-latest}
   HIVEMOOT_CLI_UPDATE: ${HIVEMOOT_CLI_UPDATE:-auto}
@@ -104,7 +106,14 @@ services:
   auth-claude-setup-token:
     <<: *agent-base
     entrypoint: ["bash", "-lc"]
-    command: ["claude setup-token"]
+    command:
+      - |
+        claude setup-token
+        mkdir -p ~/.claude
+        cat > ~/.claude.json << 'EOF'
+        {"hasCompletedOnboarding": true}
+        EOF
+        echo "Token configured. ~/.claude.json created with onboarding flag."
     volumes:
       - ./data/homes/auth:/home/node:rw
 
