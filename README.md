@@ -155,7 +155,7 @@ Then set `AGENT_AUTH_MODE=subscription` in `.env`.
 
 Kilo is a multi-model CLI that supports 500+ AI models via a unified interface. Unlike other providers, Kilo requires interactive setup before autonomous operation.
 
-### Prerequisites
+### Kilo Prerequisites
 
 1. Set `AGENT_PROVIDER=kilo` in `.env`
 2. Configure API credentials interactively (one-time setup)
@@ -230,7 +230,7 @@ The Kilo provider runs in autonomous mode via `kilo run --auto --json`.
 - **No official API key env vars**: Unlike Claude/Codex/Gemini, Kilo requires config file setup
 - **Experimental status**: Kilo integration is less production-ready than built-in providers
 
-### Troubleshooting
+### Kilo Troubleshooting
 
 | Error | Fix |
 |-------|-----|
