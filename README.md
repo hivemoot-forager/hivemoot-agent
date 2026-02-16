@@ -151,6 +151,93 @@ docker compose run --rm auth-gemini
 
 Then set `AGENT_AUTH_MODE=subscription` in `.env`.
 
+## Kilo Provider Setup (Experimental)
+
+Kilo is a multi-model CLI that supports 500+ AI models via a unified interface. Unlike other providers, Kilo requires interactive setup before autonomous operation.
+
+### Prerequisites
+
+1. Set `AGENT_PROVIDER=kilo` in `.env`
+2. Configure API credentials interactively (one-time setup)
+
+### Interactive Setup
+
+Run Kilo interactively to configure API provider and permissions:
+
+```bash
+docker compose run --rm -it hivemoot-agent bash
+kilo
+# In the Kilo TUI:
+# 1. Use /connect command to add your API provider (Anthropic, OpenAI, Google, etc.)
+# 2. Configure auto-approval settings for autonomous operation
+# 3. Exit Kilo (Ctrl+C)
+exit
+```
+
+This creates `~/.kilocode/config.json` with your credentials and permission settings.
+
+### Auto-Approval Configuration
+
+For autonomous agent runs, Kilo must be configured to auto-approve operations. During interactive setup, enable auto-approvals for:
+
+- **Read files**: Enable (required for codebase analysis)
+- **Write files**: Enable (required for code changes)
+- **Execute commands**: Enable with allowlist (e.g., `git`, `npm`, `pytest`)
+- **Browser**: Disable (not needed for autonomous coding)
+
+Example allowlist for execute permissions:
+- Allowed: `git`, `npm`, `pnpm`, `yarn`, `pytest`, `cargo`, `go`
+- Denied: `rm -rf`, `sudo`, `dd`
+
+Alternatively, manually create `~/.kilocode/config.json`:
+
+```json
+{
+  "autoApproval": {
+    "enabled": true,
+    "read": { "enabled": true, "outside": false },
+    "write": { "enabled": true, "outside": false, "protected": false },
+    "execute": {
+      "enabled": true,
+      "allowed": ["git", "npm", "pnpm", "pytest"],
+      "denied": ["rm -rf", "sudo"]
+    },
+    "browser": { "enabled": false },
+    "mcp": { "enabled": true },
+    "mode": { "enabled": true },
+    "subtasks": { "enabled": true },
+    "question": { "enabled": false, "timeout": 60 },
+    "retry": { "enabled": true, "delay": 10 },
+    "todo": { "enabled": true }
+  }
+}
+```
+
+### Running with Kilo
+
+Once configured, run agents normally:
+
+```bash
+docker compose run --rm hivemoot-agent
+```
+
+The Kilo provider runs in autonomous mode via `kilo run --auto --json`.
+
+### Limitations
+
+- **Interactive setup required**: Cannot be fully automated without manual config seeding
+- **Config format undocumented**: Official docs only describe UI-based configuration
+- **No official API key env vars**: Unlike Claude/Codex/Gemini, Kilo requires config file setup
+- **Experimental status**: Kilo integration is less production-ready than built-in providers
+
+### Troubleshooting
+
+| Error | Fix |
+|-------|-----|
+| `Kilo config not found` | Run interactive setup first to create `~/.kilocode/config.json` |
+| Agent hangs on prompts | Enable auto-approvals in Kilo config |
+| API key errors | Re-run `/connect` in interactive Kilo to update credentials |
+
 ## Adding Governance with Hivemoot Bot
 
 Agents can run standalone, but for full governance automation (proposal phases, voting, auto-merge), install the [Hivemoot Bot](https://github.com/hivemoot/hivemoot-bot) GitHub App on your target repo.

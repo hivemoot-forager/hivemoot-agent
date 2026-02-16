@@ -110,7 +110,8 @@ for secret_var in \
   OPENAI_API_KEY \
   GOOGLE_API_KEY \
   GEMINI_API_KEY \
-  ANTHROPIC_API_KEY
+  ANTHROPIC_API_KEY \
+  KILOCODE_TOKEN
 do
   load_secret_from_file "$secret_var"
 done
@@ -258,6 +259,13 @@ if [ -n "$job_home" ]; then
         cp "${HOME}/.gemini/$f" "$job_home/.gemini/$f"
       fi
     done
+  fi
+
+  # Kilo: seed config.json (contains API provider credentials and auto-approval settings)
+  # Skip session state like conversation history and caches.
+  if [ -f "${HOME}/.kilocode/config.json" ]; then
+    mkdir -p "$job_home/.kilocode"
+    cp "${HOME}/.kilocode/config.json" "$job_home/.kilocode/config.json"
   fi
 
   # Carry forward .profile so agent subprocesses find npm binaries
@@ -488,8 +496,32 @@ case "$provider" in
     run_in_repo=1
     ;;
 
+  kilo)
+    if ! command -v kilo >/dev/null 2>&1; then
+      echo "kilo CLI is not installed in the container." >&2
+      exit 1
+    fi
+
+    # Kilo requires pre-configured credentials and permissions in ~/.kilocode/config.json
+    # Users must run 'kilo' interactively once to set up API keys via /connect command,
+    # or manually create config.json with provider credentials.
+    if [ ! -f "${HOME}/.kilocode/config.json" ]; then
+      echo "Kilo config not found at ${HOME}/.kilocode/config.json" >&2
+      echo "Run 'kilo' interactively and use /connect to configure API provider, or seed config manually." >&2
+      exit 1
+    fi
+
+    log "Using Kilo with config from ${HOME}/.kilocode/config.json"
+
+    # Kilo CLI autonomous mode: kilo run --auto --json <prompt>
+    # --auto: fully autonomous execution without prompts
+    # --json: structured JSON output for CI/CD parsing
+    cmd=(kilo run --auto --json "$prompt")
+    run_in_repo=1
+    ;;
+
   *)
-    echo "Unsupported AGENT_PROVIDER: ${provider}. Use codex|gemini|claude." >&2
+    echo "Unsupported AGENT_PROVIDER: ${provider}. Use codex|gemini|claude|kilo." >&2
     exit 1
     ;;
 esac

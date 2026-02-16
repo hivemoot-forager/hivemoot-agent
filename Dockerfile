@@ -4,6 +4,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG CODEX_VERSION=latest
 ARG GEMINI_VERSION=latest
 ARG CLAUDE_CODE_VERSION=latest
+ARG KILO_VERSION=latest
 ARG HIVEMOOT_CLI_VERSION=latest
 
 # Install system dependencies. gh is installed from GitHub's official apt repo
@@ -41,6 +42,7 @@ USER node
 RUN npm install -g \
   "@openai/codex@${CODEX_VERSION}" \
   "@google/gemini-cli@${GEMINI_VERSION}" \
+  "@kilocode/cli@${KILO_VERSION}" \
   "@hivemoot-dev/cli@${HIVEMOOT_CLI_VERSION}" \
   && npm cache clean --force
 
@@ -50,7 +52,7 @@ RUN npm install -g \
 WORKDIR /tmp/claude-install
 RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
   && rm -rf /tmp/claude-install \
-  && mkdir -p /home/node/.codex /home/node/.gemini /home/node/.claude /home/node/.config/claude
+  && mkdir -p /home/node/.codex /home/node/.gemini /home/node/.claude /home/node/.config/claude /home/node/.kilocode
 
 USER root
 
@@ -60,6 +62,7 @@ USER root
 RUN ln -sf /usr/local/share/npm-global/bin/codex /usr/local/bin/codex \
   && ln -sf /usr/local/share/npm-global/bin/gemini /usr/local/bin/gemini \
   && ln -sf /home/node/.local/bin/claude /usr/local/bin/claude \
+  && ln -sf /usr/local/share/npm-global/bin/kilo /usr/local/bin/kilo \
   && ln -sf /usr/local/share/npm-global/bin/hivemoot /usr/local/bin/hivemoot
 
 USER node
