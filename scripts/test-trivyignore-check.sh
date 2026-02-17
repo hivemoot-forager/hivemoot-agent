@@ -108,4 +108,18 @@ CVE-2025-10002
 EOF
 expect_fail "multiple entries with one expired" "$ignore_mixed" "$report_file"
 
+ignore_malformed="$tmpdir/malformed-expiry.trivyignore"
+cat > "$ignore_malformed" <<'EOF'
+# exp:2026-2-01 - malformed month must fail
+CVE-2025-10001
+EOF
+expect_fail "malformed expiry format" "$ignore_malformed" "$report_file"
+
+ignore_invalid_date="$tmpdir/invalid-date-expiry.trivyignore"
+cat > "$ignore_invalid_date" <<'EOF'
+# exp:2026-02-30 - invalid calendar date must fail
+CVE-2025-10001
+EOF
+expect_fail "invalid calendar expiry date" "$ignore_invalid_date" "$report_file"
+
 echo "All trivyignore checks passed"
