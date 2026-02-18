@@ -44,7 +44,11 @@ if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
   cat > "${HOME}/.claude/.credentials.json" <<CREDS
 {"claudeAiOauth":{"accessToken":"${CLAUDE_CODE_OAUTH_TOKEN}","expiresAt":4102444800000}}
 CREDS
+  cat > "${HOME}/.claude.json" <<'JSON'
+{"hasCompletedOnboarding":true}
+JSON
   chmod 600 "${HOME}/.claude/.credentials.json"
+  chmod 600 "${HOME}/.claude.json"
 fi
 
 mode="${RUN_MODE:-once}"
