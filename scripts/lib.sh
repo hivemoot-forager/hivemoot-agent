@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# lib.sh is a sourced library; avoid "return" errors when run directly.
+if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
+  echo "scripts/lib.sh is a library and should be sourced, not executed." >&2
+  exit 0
+fi
+
 if [ -n "${HIVEMOOT_LIB_LOADED:-}" ]; then
   return 0
 fi
