@@ -7,91 +7,11 @@ log() {
   printf '[run-loop %s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
 
-trim() {
-  local value="$1"
-  value="${value#"${value%%[![:space:]]*}"}"
-  value="${value%"${value##*[![:space:]]}"}"
-  printf '%s' "$value"
-}
-
-seed_provider_home() {
-  local shared_path="$1"
-  local agent_path="$2"
-
-  if [ ! -e "$shared_path" ]; then
-    return 0
-  fi
-
-  if [ -d "$shared_path" ]; then
-    mkdir -p "$agent_path"
-    cp -R "$shared_path"/. "$agent_path"/
-  else
-    mkdir -p "$(dirname "$agent_path")"
-    cp "$shared_path" "$agent_path"
-  fi
-}
-
-# shellcheck disable=SC1091  # resolved at runtime via BASH_SOURCE
-source "$(dirname "${BASH_SOURCE[0]}")/opencode-helpers.sh"
-
-# Selective auth seeding: copy only credential files for a provider,
-# skipping conversation caches and session state. Use this instead of
-# seed_provider_home when JOB_ID isolation is active.
-# shellcheck disable=SC2317,SC2329  # available for JOB_ID callers
-seed_provider_auth() {
-  local agent_home="$1"
-  local source_home="/home/node"
-
-  # Claude Code: auth tokens in ~/.config/claude/
-  if [ -d "${source_home}/.config/claude" ]; then
-    mkdir -p "${agent_home}/.config/claude"
-    cp -R "${source_home}/.config/claude"/. "${agent_home}/.config/claude"/
-  fi
-  # Claude Code: ~/.claude/ contains both auth and session state.
-  # Seed only the OAuth credential file; skip auto-memory and projects/.
-  if [ -f "${source_home}/.claude/.credentials.json" ]; then
-    mkdir -p "${agent_home}/.claude"
-    cp "${source_home}/.claude/.credentials.json" "${agent_home}/.claude/.credentials.json"
-  fi
-
-  # Codex: only auth.json
-  if [ -f "${source_home}/.codex/auth.json" ]; then
-    mkdir -p "${agent_home}/.codex"
-    cp "${source_home}/.codex/auth.json" "${agent_home}/.codex/auth.json"
-  fi
-  # Codex: skip conversations/, cache/
-
-  # Gemini: seed only known auth/credential files; skip session state
-  # (memory.md, settings.json, state.json, telemetry, etc.)
-  if [ -d "${source_home}/.gemini" ]; then
-    mkdir -p "${agent_home}/.gemini"
-    for f in oauth_creds.json google_accounts.json mcp-oauth-tokens.json mcp-oauth-tokens-v2.json .env; do
-      if [ -f "${source_home}/.gemini/$f" ]; then
-        cp "${source_home}/.gemini/$f" "${agent_home}/.gemini/$f"
-      fi
-    done
-  fi
-
-  # Kilo: config directory holds provider auth and permission settings
-  if [ -d "${source_home}/.config/kilo" ]; then
-    mkdir -p "${agent_home}/.config/kilo"
-    cp -R "${source_home}/.config/kilo"/. "${agent_home}/.config/kilo"/
-  fi
-
-  # OpenCode: config directory holds provider auth and permission settings
-  if [ -d "${source_home}/.config/opencode" ]; then
-    mkdir -p "${agent_home}/.config/opencode"
-    cp -R "${source_home}/.config/opencode"/. "${agent_home}/.config/opencode"/
-  fi
-  # OpenCode: auth credentials from ~/.local/share/opencode/
-  if [ -f "${source_home}/.local/share/opencode/auth.json" ]; then
-    mkdir -p "${agent_home}/.local/share/opencode"
-    cp "${source_home}/.local/share/opencode/auth.json" "${agent_home}/.local/share/opencode/auth.json"
-  fi
-
-  # OpenCode: auto-generate config and auth.json if missing
-  generate_opencode_config "$agent_home"
-}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=scripts/lib.sh
+. "${SCRIPT_DIR}/lib.sh"
+# shellcheck source=scripts/opencode-helpers.sh
+. "${SCRIPT_DIR}/opencode-helpers.sh"
 
 # ── Configuration ──────────────────────────────────────────────────
 
@@ -156,39 +76,9 @@ if [ "$watch_mentions" = "1" ]; then
   fi
 fi
 
-if [ -z "$target_repo" ]; then
-  echo "TARGET_REPO is required. Set it as owner/repo." >&2
-  exit 1
-fi
-if ! printf '%s' "$target_repo" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
-  echo "Invalid TARGET_REPO: ${target_repo}. Expected owner/repo." >&2
-  exit 1
-fi
+validate_target_repo "$target_repo"
 
 # ── Agent Slot Parsing ─────────────────────────────────────────────
-
-load_slot_token() {
-  local suffix="$1"
-  local token_var="AGENT_GITHUB_TOKEN_${suffix}"
-  local token_file_var="${token_var}_FILE"
-  local token="${!token_var:-}"
-  local token_file="${!token_file_var:-}"
-
-  if [ -n "$token" ] && [ -n "$token_file" ]; then
-    echo "Set either ${token_var} or ${token_file_var}, not both." >&2
-    exit 1
-  fi
-
-  if [ -z "$token" ] && [ -n "$token_file" ]; then
-    if [ ! -f "$token_file" ]; then
-      echo "${token_file_var} does not exist: ${token_file}" >&2
-      exit 1
-    fi
-    token="$(tr -d '\r\n' < "$token_file")"
-  fi
-
-  printf '%s' "$token"
-}
 
 declare -A seen_agents=()
 declare -a agent_ids=()
@@ -407,24 +297,6 @@ preflight_check() {
   log "Pre-flight: all checks passed (agents=${agent_count} repo=${target_repo:-unset})"
 }
 
-prepare_hivemoot_cli() {
-  local update_mode="${HIVEMOOT_CLI_UPDATE:-auto}"
-  local spec="@hivemoot-dev/cli@${HIVEMOOT_CLI_VERSION:-latest}"
-
-  if [ "$update_mode" = "skip" ]; then
-    log "Pre-run: skipping hivemoot CLI update (HIVEMOOT_CLI_UPDATE=skip)"
-  else
-    log "Pre-run: updating hivemoot CLI (${spec})"
-    npm install -g "$spec"
-    hash -r
-  fi
-
-  if ! command -v hivemoot >/dev/null 2>&1; then
-    echo "hivemoot CLI is not available." >&2
-    exit 1
-  fi
-}
-
 preflight_check
 prepare_hivemoot_cli
 
@@ -446,16 +318,10 @@ for index in "${!agent_ids[@]}"; do
     "$agent_home/.local/share" 2>/dev/null || true
 
   # Copy shared provider auth state into each agent home
-  seed_provider_home "/home/node/.codex" "$agent_home/.codex"
-  seed_provider_home "/home/node/.gemini" "$agent_home/.gemini"
-  seed_provider_home "/home/node/.claude" "$agent_home/.claude"
-  seed_provider_home "/home/node/.config/claude" "$agent_home/.config/claude"
-  seed_provider_home "/home/node/.config/kilo" "$agent_home/.config/kilo"
-  seed_provider_home "/home/node/.config/opencode" "$agent_home/.config/opencode"
-  seed_provider_home "/home/node/.local/share/opencode" "$agent_home/.local/share/opencode"
+  seed_shared_provider_state "$agent_home"
 
   # Generate OpenCode auth.json if missing (API key stored in auth.json,
-  # not in config provider options). Must run after seed_provider_home so
+  # not in config provider options). Must run after shared-state seeding so
   # the bind-mounted config is already in place.
   generate_opencode_config "$agent_home"
 
@@ -500,7 +366,7 @@ trap handle_shutdown TERM INT
 # Returns ${agent_run_busy_exit} when the agent was busy (lock not acquired).
 # Returns non-zero/non-3 on actual run-once.sh failure.
 #
-# Args: agent_id extra_prompt [ack_key state_file]
+# Args: agent_id extra_prompt [ack_key state_file session_key]
 # When ack_key + state_file are provided and the run succeeds (exit 0),
 # calls `hivemoot ack` to mark the mention as read. On failure the mention
 # stays unread so the next poll cycle retries it.
@@ -509,6 +375,7 @@ try_run_agent() {
   local extra_prompt="$2"
   local ack_key="${3:-}"
   local state_file="${4:-}"
+  local session_key="${5:-}"
   local lock_file="${lock_dir}/${agent_id}.lock"
   local token_file="${agent_token_files[$agent_id]}"
   local agent_workspace="${workspace_root}/agents/${agent_id}"
@@ -532,6 +399,7 @@ try_run_agent() {
     export AGENT_GIT_EMAIL="${agent_id}@${email_domain}"
     export HIVEMOOT_BUZZ_ROLE="$agent_id"
     export AGENT_EXTRA_PROMPT="$extra_prompt"
+    export AGENT_SESSION_KEY="$session_key"
 
     unset AGENT_GITHUB_TOKEN GITHUB_TOKEN GH_TOKEN
 
@@ -665,11 +533,18 @@ Then read the full thread, research the topic, and take appropriate action with 
           ack_key="${thread_id}:${timestamp}"
         fi
 
+        local mention_session_key=""
+        if [ -n "$thread_id" ]; then
+          mention_session_key="mention-thread:${thread_id}"
+        elif [ -n "$number" ]; then
+          mention_session_key="mention-number:${number}"
+        fi
+
         # Try to acquire agent lock and run; pass ack info for deferred mark-read.
         # Redirect stdin from /dev/null so the backgrounded child doesn't inherit
         # the pipe fd — inherited pipe fds can flip to O_NONBLOCK and cause the
         # parent while-read loop to fail with EAGAIN, killing the watcher.
-        try_run_agent "$agent_id" "$combined_prompt" "$ack_key" "$state_file" </dev/null &
+        try_run_agent "$agent_id" "$combined_prompt" "$ack_key" "$state_file" "$mention_session_key" </dev/null &
 
       done || true  # Don't let pipefail+errexit kill the restart loop
 

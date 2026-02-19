@@ -35,6 +35,10 @@ x-agent-env: &agent-env
   AGENT_PROVIDER: ${AGENT_PROVIDER:-claude}
   AGENT_AUTH_MODE: ${AGENT_AUTH_MODE:-api_key}
   AGENT_TIMEOUT_SECONDS: ${AGENT_TIMEOUT_SECONDS:-1800}
+  SESSION_RESUME: ${SESSION_RESUME:-}
+  SESSION_RESUME_ENABLED: ${SESSION_RESUME_ENABLED:-1}
+  SESSION_RESUME_MAX_IDLE_HOURS: ${SESSION_RESUME_MAX_IDLE_HOURS:-12}
+  SESSION_RESUME_MAX_AGE_HOURS: ${SESSION_RESUME_MAX_AGE_HOURS:-24}
   WATCH_MENTIONS: ${WATCH_MENTIONS:-}
   FRESH_CLONE: ${FRESH_CLONE:-1}
   AGENT_MODEL: ${AGENT_MODEL:-}
@@ -76,6 +80,8 @@ x-agent-env: &agent-env
   GEMINI_API_KEY_FILE: ${GEMINI_API_KEY_FILE:-}
   ANTHROPIC_API_KEY_FILE: ${ANTHROPIC_API_KEY_FILE:-}
   OPENROUTER_API_KEY_FILE: ${OPENROUTER_API_KEY_FILE:-}
+  CLAUDE_CODE_OAUTH_TOKEN_FILE: ${CLAUDE_CODE_OAUTH_TOKEN_FILE:-}
+  CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
   KILO_PROVIDER: ${KILO_PROVIDER:-}
   KILO_MODEL: ${KILO_MODEL:-}
   KILOCODE_TOKEN_FILE: ${KILOCODE_TOKEN_FILE:-}
@@ -112,6 +118,18 @@ services:
   auth-claude:
     <<: *agent-base
     entrypoint: ["claude"]
+
+  auth-claude-setup-token:
+    <<: *agent-base
+    entrypoint: ["bash", "-lc"]
+    command:
+      - |
+        set -euo pipefail
+        claude setup-token
+        cat > "${HOME}/.claude.json" <<'JSON'
+        {"hasCompletedOnboarding": true}
+        JSON
+        echo "Token setup complete. Persist ${HOME}/.claude/.credentials.json and ${HOME}/.claude.json."
 
   auth-kilo:
     <<: *agent-base

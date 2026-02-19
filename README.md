@@ -154,6 +154,12 @@ RUN_MODE=loop WATCH_MENTIONS=1 docker compose up hivemoot-agent
 
 Requires `TARGET_REPO` and user tokens (not installation tokens). Additional settings:
 - `WATCH_POLL_INTERVAL` — seconds between mention polls (default: 300)
+- `SESSION_RESUME` — set `0` to disable session resume and always start fresh runs (default: `1`)
+- `SESSION_RESUME_MAX_IDLE_HOURS` — reset stale sessions after this idle window (default: `12`)
+- `SESSION_RESUME_MAX_AGE_HOURS` — reset sessions older than this total age window (default: `24`)
+- `FRESH_CLONE` — set `0` to reuse each agent clone between runs (recommended for faster mention follow-ups)
+
+When `AGENT_PROVIDER=codex`, mention-triggered runs keep one Codex session per GitHub notification thread and resume follow-up mentions with the saved thread/session UUID (`codex exec resume <SESSION_ID>`). The UUID is extracted from Codex `--json` output (`thread.started.thread_id`) and persisted under each agent workspace (for example `/workspace/repo/agents/<agent-id>/sessions/codex/tool-session-map.tsv`), scoped by runtime settings (repo/provider/model/tool options + mention key) to avoid cross-config reuse. Periodic runs (no mention session key) always start fresh. Resume is strict: sessions reset when idle/age limits are exceeded (`SESSION_RESUME_MAX_IDLE_HOURS` / `SESSION_RESUME_MAX_AGE_HOURS`), and any failed resume is retried once as a fresh session.
 
 ## Subscription Auth (Optional)
 
@@ -161,12 +167,22 @@ For subscription mode (no API key needed), authenticate once per provider:
 
 ```bash
 docker compose run --rm auth-claude
+docker compose run --rm auth-claude-setup-token
 docker compose run --rm auth-codex
 docker compose run --rm auth-gemini
 docker compose run --rm auth-kilo
 ```
 
 Then set `AGENT_AUTH_MODE=subscription` in `.env`.
+
+For Claude headless automation, `auth-claude-setup-token` is recommended. It runs
+`claude setup-token` and writes `~/.claude.json` with
+`{"hasCompletedOnboarding": true}` so isolated agent homes can skip interactive onboarding.
+Store the token in a secret file and set:
+
+```bash
+CLAUDE_CODE_OAUTH_TOKEN_FILE=/run/secrets/claude_oauth_token
+```
 
 ## Kilo Provider Comparison
 
@@ -337,6 +353,20 @@ chmod 600 secrets/anthropic_api_key
 AGENT_PROVIDER=claude
 AGENT_AUTH_MODE=api_key
 ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key
+```
+
+### Example: Claude subscription token
+
+```bash
+printf '%s' "sk-ant-oat01-xxx" > secrets/claude_oauth_token
+chmod 600 secrets/claude_oauth_token
+```
+
+```bash
+# .env
+AGENT_PROVIDER=claude
+AGENT_AUTH_MODE=subscription
+CLAUDE_CODE_OAUTH_TOKEN_FILE=/run/secrets/claude_oauth_token
 ```
 
 ### Example: Codex
