@@ -100,10 +100,10 @@ ARG CLAUDE_CODE_VERSION=latest
 # installer so we stay aligned with supported distribution. Install from a
 # small temporary directory to avoid known installer OOM failures in Docker.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-RUN mkdir -p /tmp/claude-install \
-  && cd /tmp/claude-install \
-  && curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
+WORKDIR /tmp/claude-install
+RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
   && rm -rf /tmp/claude-install
+WORKDIR /home/node
 USER root
 RUN ln -sf /home/node/.local/bin/claude /usr/local/bin/claude
 USER node
@@ -122,10 +122,10 @@ RUN npm install -g \
   "opencode-ai@${OPENCODE_VERSION}" \
   && npm cache clean --force
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-RUN mkdir -p /tmp/claude-install \
-  && cd /tmp/claude-install \
-  && curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
+WORKDIR /tmp/claude-install
+RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
   && rm -rf /tmp/claude-install
+WORKDIR /home/node
 USER root
 RUN ln -sf /usr/local/share/npm-global/bin/codex /usr/local/bin/codex \
   && ln -sf /usr/local/share/npm-global/bin/gemini /usr/local/bin/gemini \
