@@ -92,7 +92,7 @@ RUN npm install -g "opencode-ai@${OPENCODE_VERSION}" && npm cache clean --force
 USER root
 RUN ln -sf /usr/local/share/npm-global/bin/opencode /usr/local/bin/opencode
 USER node
-RUN mkdir -p /home/node/.local/share/opencode
+RUN mkdir -p /home/node/.config/opencode /home/node/.local/share/opencode
 
 FROM base AS provider-claude
 ARG CLAUDE_CODE_VERSION=latest
@@ -139,6 +139,7 @@ RUN mkdir -p \
   /home/node/.claude \
   /home/node/.config/claude \
   /home/node/.config/kilo \
+  /home/node/.config/opencode \
   /home/node/.local/share/opencode
 
 # -----------------------------------------------------------------------------
