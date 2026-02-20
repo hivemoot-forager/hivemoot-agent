@@ -1,3 +1,8 @@
+# Global build arg — controls which provider stage becomes the runtime image.
+# Must be at global scope (before first FROM) to be usable in FROM directives.
+# Values: all | codex | gemini | kilo | opencode | claude
+ARG PROVIDER=all
+
 FROM node:24-slim AS base
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -54,7 +59,7 @@ USER node
 # -----------------------------------------------------------------------------
 # Provider stages — each installs exactly one provider CLI.
 # The `all` stage installs every provider (backward-compatible default).
-# Select a stage via --build-arg PROVIDER=<name> at build time.
+# Select a stage via DOCKER_PROVIDER in .env (passed as --build-arg PROVIDER).
 # -----------------------------------------------------------------------------
 
 FROM base AS provider-codex
@@ -94,6 +99,7 @@ ARG CLAUDE_CODE_VERSION=latest
 # Anthropic deprecated npm installation for Claude Code; use the native
 # installer so we stay aligned with supported distribution. Install from a
 # small temporary directory to avoid known installer OOM failures in Docker.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 WORKDIR /tmp/claude-install
 RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
   && rm -rf /tmp/claude-install
@@ -114,6 +120,7 @@ RUN npm install -g \
   "@kilocode/cli@${KILO_VERSION}" \
   "opencode-ai@${OPENCODE_VERSION}" \
   && npm cache clean --force
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 WORKDIR /tmp/claude-install
 RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
   && rm -rf /tmp/claude-install
@@ -133,11 +140,11 @@ RUN mkdir -p \
   /home/node/.local/share/opencode
 
 # -----------------------------------------------------------------------------
-# Runtime stage — selects a provider stage; defaults to `all` for backward
-# compatibility. Override at build time: --build-arg PROVIDER=claude
+# Runtime stage — selects a provider stage via the global PROVIDER arg.
+# Default is `all` for backward compatibility with existing docker compose usage.
+# Override: DOCKER_PROVIDER=claude docker compose build hivemoot-agent
 # -----------------------------------------------------------------------------
 
-ARG PROVIDER=all
 # hadolint ignore=DL3006
 FROM provider-${PROVIDER} AS runtime
 
