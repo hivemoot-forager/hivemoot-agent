@@ -40,6 +40,8 @@ jobs:
         run: bash scripts/test-session-resume-lifecycle.sh
       - name: Verify controller behavior
         run: bash scripts/test-controller.sh
+      - name: Verify git reference cache behavior
+        run: bash scripts/test-git-reference-cache.sh
 
   hadolint:
     name: Hadolint

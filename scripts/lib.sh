@@ -301,3 +301,80 @@ seed_provider_auth() {
   # OpenCode: auto-generate config and auth.json if missing
   generate_opencode_config "$agent_home"
 }
+
+# Attempt a git clone that first updates (or creates) a shared bare mirror
+# for the target repo and passes it as --reference --dissociate to the
+# working clone.  Falls back silently to a direct clone on any failure.
+#
+# Usage:
+#   clone_with_reference_cache \
+#     <clone_url>   \   # full HTTPS URL to the repository
+#     <repo_dir>    \   # destination working clone directory
+#     <cache_root>  \   # host dir for bare mirrors (e.g. $workspace_root/.git-cache)
+#     <clone_args...>   # extra args forwarded to git clone (e.g. --depth 50)
+#
+# Environment: GIT_ASKPASS, GIT_PAT, GIT_TERMINAL_PROMPT must be set by caller.
+# Returns 0 on success (mirror-backed or direct fallback), non-zero only on
+# fatal errors (clone itself failed after fallback).
+clone_with_reference_cache() {
+  local clone_url="$1"
+  local repo_dir="$2"
+  local cache_root="$3"
+  shift 3
+  local extra_clone_args=("$@")
+
+  # Derive a safe filesystem key from the URL: strip scheme, replace / with -
+  # "https://github.com/owner/repo.git" → "github.com-owner-repo"
+  local url_key
+  url_key="$(printf '%s' "$clone_url" | sed 's|^https\?://||; s|\.git$||; s|[/:]|-|g')"
+
+  local mirror_dir="${cache_root}/${url_key}/mirror.git"
+  local lock_dir="/tmp/hivemoot-git-cache"
+  local lock_file="${lock_dir}/${url_key}.lock"
+
+  # Ensure lock directory exists (under /tmp for reliable flock semantics on
+  # overlayfs and bind mounts that may not support flock on the data path).
+  mkdir -p "$lock_dir"
+
+  local mirror_ok=0
+
+  # Acquire writer lock (30s timeout) before touching the shared mirror.
+  # Concurrent readers using --reference after this block don't need the lock:
+  # git clone --dissociate copies all referenced objects into the working clone,
+  # so the mirror is only read during the clone itself and the working clone is
+  # self-contained afterward.
+  (
+    flock -w 30 9 || exit 1
+    if [ ! -d "$mirror_dir" ]; then
+      mkdir -p "$mirror_dir"
+      if GIT_ASKPASS="${GIT_ASKPASS:-}" GIT_PAT="${GIT_PAT:-}" GIT_TERMINAL_PROMPT=0 \
+          git clone --bare --mirror "$clone_url" "$mirror_dir" 2>&1; then
+        git -C "$mirror_dir" config gc.auto 0
+        git -C "$mirror_dir" config gc.pruneExpire never
+      else
+        rm -rf "$mirror_dir"
+        exit 1
+      fi
+    else
+      GIT_ASKPASS="${GIT_ASKPASS:-}" GIT_PAT="${GIT_PAT:-}" GIT_TERMINAL_PROMPT=0 \
+        git -C "$mirror_dir" remote update 2>&1
+    fi
+  ) 9>"$lock_file" && mirror_ok=1
+
+  if [ "$mirror_ok" -eq 1 ] && [ -d "$mirror_dir" ]; then
+    # Mirror is ready: clone with --reference --dissociate so the working clone
+    # is fully self-contained (no ongoing alternates dependency on the mirror).
+    if GIT_ASKPASS="${GIT_ASKPASS:-}" GIT_PAT="${GIT_PAT:-}" GIT_TERMINAL_PROMPT=0 \
+        git clone "${extra_clone_args[@]}" \
+          --reference "$mirror_dir" --dissociate \
+          "$clone_url" "$repo_dir" 2>&1; then
+      return 0
+    fi
+    # Clone with reference failed; fall through to direct clone.
+    rm -rf "$repo_dir" 2>/dev/null || true
+  fi
+
+  # Fallback: direct clone without reference cache.
+  GIT_ASKPASS="${GIT_ASKPASS:-}" GIT_PAT="${GIT_PAT:-}" GIT_TERMINAL_PROMPT=0 \
+    git clone "${extra_clone_args[@]}" "$clone_url" "$repo_dir" 2>&1
+}

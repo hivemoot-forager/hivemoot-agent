@@ -270,6 +270,7 @@ hivemoot_buzz_role="${HIVEMOOT_BUZZ_ROLE:-}"
 target_repo="${TARGET_REPO:-}"
 workspace_root="${WORKSPACE_ROOT:-/workspace}"
 clone_depth="${GIT_CLONE_DEPTH:-50}"
+shared_clone_cache="${SHARED_CLONE_CACHE:-1}"
 prompt_file="${AGENT_PROMPT_FILE:-/opt/hivemoot-agent/prompts/default.md}"
 extra_prompt="${AGENT_EXTRA_PROMPT:-}"
 agent_model="${AGENT_MODEL:-}"
@@ -637,13 +638,27 @@ EOF
       clone_args+=(--depth "$clone_depth")
       depth_label="$clone_depth"
     fi
-    log "Cloning https://github.com/${target_repo}.git (depth=${depth_label})"
-    if ! GIT_ASKPASS="$askpass" GIT_PAT="$github_token" GIT_TERMINAL_PROMPT=0 \
-      git clone "${clone_args[@]}" "https://github.com/${target_repo}.git" "$repo_dir" 2>&1; then
-      rm -rf "$repo_dir"
-      rm -f "$askpass"
-      echo "Failed to clone ${target_repo}. Check token and repo access." >&2
-      exit 1
+    local clone_url="https://github.com/${target_repo}.git"
+    local cache_root="${workspace_root}/.git-cache"
+    if [ "${shared_clone_cache:-1}" = "1" ]; then
+      log "Cloning ${clone_url} (depth=${depth_label}, reference cache enabled)"
+      if ! GIT_ASKPASS="$askpass" GIT_PAT="$github_token" \
+          clone_with_reference_cache \
+            "$clone_url" "$repo_dir" "$cache_root" "${clone_args[@]}"; then
+        rm -rf "$repo_dir"
+        rm -f "$askpass"
+        echo "Failed to clone ${target_repo}. Check token and repo access." >&2
+        exit 1
+      fi
+    else
+      log "Cloning ${clone_url} (depth=${depth_label})"
+      if ! GIT_ASKPASS="$askpass" GIT_PAT="$github_token" GIT_TERMINAL_PROMPT=0 \
+          git clone "${clone_args[@]}" "$clone_url" "$repo_dir" 2>&1; then
+        rm -rf "$repo_dir"
+        rm -f "$askpass"
+        echo "Failed to clone ${target_repo}. Check token and repo access." >&2
+        exit 1
+      fi
     fi
   fi
 
