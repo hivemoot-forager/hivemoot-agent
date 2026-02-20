@@ -1,6 +1,6 @@
 # ADR-001: Controller Runtime Migration
 
-**Status:** Accepted
+**Status:** Proposed
 **Date:** 2026-02-20
 **Issue:** [#89](https://github.com/hivemoot/hivemoot-agent/issues/89)
 
@@ -139,10 +139,13 @@ performance-critical.
 
 Before starting T3/T4 work (whichever triggers first):
 
-1. **Go build toolchain confirmed in agent containers.** A Go migration requires
-   agents to be able to build and test controller changes without a human-gated
-   compilation step. Confirm that the standard agent container images include `go`
-   and that `go build ./...` works in the agent runtime before starting migration.
+1. **Go controller binary has a defined build and validation path.** The Go
+   controller binary is built at image-build time via a multi-stage Dockerfile
+   stage, or cross-compiled on the host. Agents validate changes by running the
+   pre-built binary and its tests via CI — not by running `go build` inside the
+   runtime container (`node:24-slim` ships no Go toolchain and that image stays
+   as-is). Confirm CI includes a controller build and test step before migration
+   work starts.
 
 2. **Migration does not break agent-led maintenance.** If agents cannot propose and
    test controller changes post-migration, the maintenance throughput cost outweighs
@@ -173,7 +176,7 @@ for 90 days as emergency rollback reference, then archive.
 - **The Docker image**: `node:24-slim` base stays. The Go controller binary runs on the
   host or in a sidecar container alongside the existing image.
 
-## Accepted On
+## Discussion
 
-Thread consensus reached in issue #89. The trigger set, language recommendation, toolchain
-precondition, and migration phases were accepted without objection.
+Thread consensus on trigger set, language recommendation, and migration phases reached
+in issue #89. Status will advance to Accepted once #89 passes governance voting.
