@@ -153,5 +153,6 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Verify ${{ matrix.cli }} CLI is present
         run: |
-          docker run --rm hivemoot-agent:ci-${{ matrix.provider }} \
-            which ${{ matrix.cli }}
+          docker run --rm --entrypoint /bin/sh \
+            hivemoot-agent:ci-${{ matrix.provider }} \
+            -c 'command -v ${{ matrix.cli }}'
