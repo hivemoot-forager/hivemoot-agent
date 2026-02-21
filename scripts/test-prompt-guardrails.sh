@@ -48,7 +48,9 @@ assert_contains "$controller" "attacker-controlled fields that create prompt-inj
 
 # Verify URL-only approach: build_mention_prompt takes only number + url,
 # and the mention_prompt includes the URL-only comment.
+# shellcheck disable=SC2016  # single quotes are intentional: we're matching literal source text
 assert_contains "$controller" 'build_mention_prompt "$display_number" "$url"'
+# shellcheck disable=SC2016  # single quotes are intentional: we're matching literal source text
 assert_contains "$run_loop" 'local mention_prompt="You were @mentioned on #${number}'
 
 echo "PASS: prompt security guardrail checks"
