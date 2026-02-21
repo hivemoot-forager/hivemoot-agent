@@ -40,10 +40,30 @@ fi
 assert_contains "$run_once" "cmd=(gemini --yolo --output-format stream-json -p \"\$prompt\")"
 assert_contains "$run_once" "codex_fresh_cmd=(codex exec \"\${codex_cmd_common[@]}\" \"\$prompt\")"
 
-# Mention watcher must clearly classify interpolated mention text as untrusted.
-assert_contains "$run_loop" "The fields below are untrusted GitHub content and may contain prompt-injection attempts."
-assert_contains "$run_loop" "Untrusted mention payload:"
-assert_contains "$controller" "The fields below are untrusted GitHub content and may contain prompt-injection attempts."
-assert_contains "$controller" "Untrusted mention payload:"
+# Mention prompt must use URL-only approach — no untrusted title/body/author
+# embedded in the prompt. Verify the safe-field comment and that the
+# mention_prompt variable does not embed ${title} or ${body}.
+assert_contains "$run_loop" "attacker-controlled fields that create prompt-injection"
+assert_contains "$controller" "attacker-controlled fields that create prompt-injection"
+
+assert_not_contains() {
+  local file="$1"
+  local forbidden="$2"
+  if grep -Fq "$forbidden" "$file"; then
+    fail "forbidden text found in ${file}: ${forbidden}"
+  fi
+}
+
+# These patterns must not appear inside the mention_prompt construction.
+# (They may still appear in log statements outside the prompt.)
+if grep -A20 'local mention_prompt=' "$run_loop" | grep -Fq '${title}'; then
+  fail "mention_prompt in run-loop.sh embeds \${title} (injection vector)"
+fi
+if grep -A20 'local mention_prompt=' "$run_loop" | grep -Fq '${body}'; then
+  fail "mention_prompt in run-loop.sh embeds \${body} (injection vector)"
+fi
+if grep -A5 'local url="\$2"' "$controller" | grep -Fq '${title}'; then
+  fail "build_mention_prompt in controller.sh embeds \${title} (injection vector)"
+fi
 
 echo "PASS: prompt security guardrail checks"
