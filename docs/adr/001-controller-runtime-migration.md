@@ -137,7 +137,7 @@ performance-critical.
 
 ## Preconditions for Migration
 
-Before starting T3/T4 work (whichever triggers first):
+Before migration starts (when any trigger fires):
 
 1. **Go controller binary has a defined build and validation path.** The Go
    controller binary is built at image-build time via a multi-stage Dockerfile
