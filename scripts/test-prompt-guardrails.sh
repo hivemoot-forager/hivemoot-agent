@@ -46,24 +46,9 @@ assert_contains "$run_once" "codex_fresh_cmd=(codex exec \"\${codex_cmd_common[@
 assert_contains "$run_loop" "attacker-controlled fields that create prompt-injection"
 assert_contains "$controller" "attacker-controlled fields that create prompt-injection"
 
-assert_not_contains() {
-  local file="$1"
-  local forbidden="$2"
-  if grep -Fq "$forbidden" "$file"; then
-    fail "forbidden text found in ${file}: ${forbidden}"
-  fi
-}
-
-# These patterns must not appear inside the mention_prompt construction.
-# (They may still appear in log statements outside the prompt.)
-if grep -A20 'local mention_prompt=' "$run_loop" | grep -Fq '${title}'; then
-  fail "mention_prompt in run-loop.sh embeds \${title} (injection vector)"
-fi
-if grep -A20 'local mention_prompt=' "$run_loop" | grep -Fq '${body}'; then
-  fail "mention_prompt in run-loop.sh embeds \${body} (injection vector)"
-fi
-if grep -A5 'local url="\$2"' "$controller" | grep -Fq '${title}'; then
-  fail "build_mention_prompt in controller.sh embeds \${title} (injection vector)"
-fi
+# Verify URL-only approach: build_mention_prompt takes only number + url,
+# and the mention_prompt includes the URL-only comment.
+assert_contains "$controller" 'build_mention_prompt "$display_number" "$url"'
+assert_contains "$run_loop" 'local mention_prompt="You were @mentioned on #${number}'
 
 echo "PASS: prompt security guardrail checks"

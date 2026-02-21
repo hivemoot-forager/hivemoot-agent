@@ -387,9 +387,7 @@ enqueue_watch_event() {
 
   local thread_id=""
   local number=""
-  local title=""
   local author=""
-  local body=""
   local url=""
   local timestamp=""
   local display_number="?"
@@ -405,9 +403,7 @@ enqueue_watch_event() {
 
   thread_id="$(printf '%s' "$line" | jq -r '.threadId // empty')"
   number="$(printf '%s' "$line" | jq -r '.number // empty')"
-  title="$(printf '%s' "$line" | jq -r '.title // empty')"
   author="$(printf '%s' "$line" | jq -r '.author // empty')"
-  body="$(printf '%s' "$line" | jq -r '.body // empty')"
   url="$(printf '%s' "$line" | jq -r '.url // empty')"
   timestamp="$(printf '%s' "$line" | jq -r '.timestamp // empty')"
 
