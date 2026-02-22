@@ -356,33 +356,7 @@ for index in "${!agent_ids[@]}"; do
     set -euo pipefail
     umask 077
 
-    mkdir -p \
-      "$agent_home/.config" \
-      "$agent_home/.cache" \
-      "$agent_home/.local" \
-      "$agent_home/.local/share"
-    chmod 700 \
-      "$agent_home/.config" \
-      "$agent_home/.cache" \
-      "$agent_home/.local" \
-      "$agent_home/.local/share" 2>/dev/null || true
-
-    # Preserve per-agent isolation while allowing subscription auth reuse:
-    # copy shared provider home state once into each agent home.
-    seed_shared_provider_state "$agent_home"
-
-    # Generate OpenCode auth.json if missing (API key stored in auth.json,
-    # not in config provider options). Must run after shared-state seeding so
-    # the bind-mounted config is already in place.
-    generate_opencode_config "$agent_home"
-
-    # Login shells (bash -lc) reset PATH from /etc/profile, losing the
-    # Docker ENV that includes the npm global bin directory. Write a
-    # .profile so agent subprocesses (codex/gemini/claude CLI tools)
-    # can find hivemoot and other npm-installed binaries.
-    # shellcheck disable=SC2016  # literal ${PATH} intended for .profile
-    printf 'export PATH="/usr/local/share/npm-global/bin:${PATH}"\n' \
-      > "$agent_home/.profile"
+    init_agent_home "$agent_home"
 
     unset AGENT_GITHUB_TOKEN GITHUB_TOKEN GH_TOKEN
     export HOME="$agent_home"

@@ -332,29 +332,7 @@ for index in "${!agent_ids[@]}"; do
   aid="${agent_ids[$index]}"
   agent_home="$(resolve_managed_agent_home "$workspace_root" "$aid" "$effective_auth_mode")"
 
-  mkdir -p \
-    "$agent_home/.config" \
-    "$agent_home/.cache" \
-    "$agent_home/.local" \
-    "$agent_home/.local/share"
-  chmod 700 \
-    "$agent_home/.config" \
-    "$agent_home/.cache" \
-    "$agent_home/.local" \
-    "$agent_home/.local/share" 2>/dev/null || true
-
-  # Copy shared provider auth state into each agent home
-  seed_shared_provider_state "$agent_home"
-
-  # Generate OpenCode auth.json if missing (API key stored in auth.json,
-  # not in config provider options). Must run after shared-state seeding so
-  # the bind-mounted config is already in place.
-  generate_opencode_config "$agent_home"
-
-  # Ensure agent subprocesses can find npm-installed binaries
-  # shellcheck disable=SC2016
-  printf 'export PATH="/usr/local/share/npm-global/bin:${PATH}"\n' \
-    > "$agent_home/.profile"
+  init_agent_home "$agent_home"
 done
 
 # ── Lock & Run Infrastructure ──────────────────────────────────────
