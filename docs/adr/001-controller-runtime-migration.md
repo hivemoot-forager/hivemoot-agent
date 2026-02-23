@@ -1,6 +1,6 @@
 # ADR-001: Controller Runtime Migration
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-02-20
 **Issue:** [#89](https://github.com/hivemoot/hivemoot-agent/issues/89)
 
@@ -179,4 +179,4 @@ for 90 days as emergency rollback reference, then archive.
 ## Discussion
 
 Thread consensus on trigger set, language recommendation, and migration phases reached
-in issue #89. Status will advance to Accepted once #89 passes governance voting.
+in issue #89. Governance passed on 2026-02-23 (issue advanced to `hivemoot:ready-to-implement`).
