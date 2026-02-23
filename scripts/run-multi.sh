@@ -26,7 +26,6 @@ done
 . "${SCRIPT_DIR}/opencode-helpers.sh"
 
 workspace_root="${WORKSPACE_ROOT:-/workspace}"
-email_domain="${AGENT_GIT_EMAIL_DOMAIN:-agents.local}"
 global_extra_prompt="${AGENT_EXTRA_PROMPT:-}"
 target_repo="${TARGET_REPO:-}"
 launch_jitter_min="${LAUNCH_JITTER_MIN_SECS:-120}"
@@ -356,33 +355,7 @@ for index in "${!agent_ids[@]}"; do
     set -euo pipefail
     umask 077
 
-    mkdir -p \
-      "$agent_home/.config" \
-      "$agent_home/.cache" \
-      "$agent_home/.local" \
-      "$agent_home/.local/share"
-    chmod 700 \
-      "$agent_home/.config" \
-      "$agent_home/.cache" \
-      "$agent_home/.local" \
-      "$agent_home/.local/share" 2>/dev/null || true
-
-    # Preserve per-agent isolation while allowing subscription auth reuse:
-    # copy shared provider home state once into each agent home.
-    seed_shared_provider_state "$agent_home"
-
-    # Generate OpenCode auth.json if missing (API key stored in auth.json,
-    # not in config provider options). Must run after shared-state seeding so
-    # the bind-mounted config is already in place.
-    generate_opencode_config "$agent_home"
-
-    # Login shells (bash -lc) reset PATH from /etc/profile, losing the
-    # Docker ENV that includes the npm global bin directory. Write a
-    # .profile so agent subprocesses (codex/gemini/claude CLI tools)
-    # can find hivemoot and other npm-installed binaries.
-    # shellcheck disable=SC2016  # literal ${PATH} intended for .profile
-    printf 'export PATH="/usr/local/share/npm-global/bin:${PATH}"\n' \
-      > "$agent_home/.profile"
+    init_agent_home "$agent_home"
 
     unset AGENT_GITHUB_TOKEN GITHUB_TOKEN GH_TOKEN
     export HOME="$agent_home"
@@ -391,7 +364,6 @@ for index in "${!agent_ids[@]}"; do
     export LOG_DIR="$agent_log_dir"
     export AGENT_GITHUB_TOKEN_FILE="$token_file"
     export AGENT_GIT_NAME="$agent_id"
-    export AGENT_GIT_EMAIL="${agent_id}@${email_domain}"
     export HIVEMOOT_BUZZ_ROLE="$agent_id"
     export AGENT_EXTRA_PROMPT="$agent_extra_prompt"
 

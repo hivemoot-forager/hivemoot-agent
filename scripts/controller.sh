@@ -47,21 +47,23 @@ sanitize_lock_key() {
   printf '%s' "$value" | tr -c 'A-Za-z0-9' '_'
 }
 
-ensure_repo_lock_file() {
+ensure_agent_lock_file() {
   local repo="$1"
+  local agent_id="$2"
+  local lock_key="${repo}:${agent_id}"
   local repo_key=""
-  local repo_lock_file="${repo_lock_files[$repo]:-}"
+  local lock_file="${repo_lock_files[$lock_key]:-}"
 
-  if [ -n "$repo_lock_file" ]; then
+  if [ -n "$lock_file" ]; then
     return 0
   fi
 
-  repo_key="$(sanitize_lock_key "$repo")"
-  repo_lock_file="${lock_dir}/repo-${repo_key}.lock"
-  mkdir -p "$(dirname "$repo_lock_file")"
-  : > "$repo_lock_file"
-  chmod 600 "$repo_lock_file" 2>/dev/null || true
-  repo_lock_files["$repo"]="$repo_lock_file"
+  repo_key="$(sanitize_lock_key "${repo}__${agent_id}")"
+  lock_file="${lock_dir}/agent-${repo_key}.lock"
+  mkdir -p "$(dirname "$lock_file")"
+  : > "$lock_file"
+  chmod 600 "$lock_file" 2>/dev/null || true
+  repo_lock_files["$lock_key"]="$lock_file"
 }
 
 generate_job_id() {
@@ -170,6 +172,13 @@ append_secret_env() {
   fi
 }
 
+cleanup_job_home_credentials() {
+  local job_home="$1"
+
+  rm -f "${job_home}/.codex/auth.json" 2>/dev/null || true
+  rmdir "${job_home}/.codex" 2>/dev/null || true
+}
+
 spawn_worker() {
   local job_id="$1"
   local repo="$2"
@@ -195,13 +204,25 @@ spawn_worker() {
     --security-opt=no-new-privileges
     --read-only
     --tmpfs "/tmp:size=2g,mode=1777"
-    --tmpfs "/usr/local/share/npm-global:size=1g"
     --memory "${AGENT_MEMORY_LIMIT:-16g}"
     --cpus "${AGENT_CPU_LIMIT:-4.0}"
     --pids-limit "${AGENT_PIDS_LIMIT:-512}"
     -v "${job_workspace}:/workspace"
     -v "${job_home}:/home/node"
     -v "${token_file}:/run/secrets/agent_github_token:ro"
+  )
+
+  # Copy codex subscription auth into the worker's home if available.
+  # Docker Desktop on macOS (virtiofs) can't nest a file mount inside a
+  # bind mount with --read-only, so we copy instead of mounting.
+  local codex_auth_file="${CODEX_AUTH_FILE:-}"
+  if [ -n "$codex_auth_file" ] && [ -f "$codex_auth_file" ]; then
+    mkdir -p "${job_home}/.codex"
+    cp "$codex_auth_file" "${job_home}/.codex/auth.json"
+    chmod 600 "${job_home}/.codex/auth.json"
+  fi
+
+  docker_run_args+=(
     -e RUN_MODE=once
     -e TARGET_REPO="${repo}"
     -e WORKSPACE_ROOT=/workspace
@@ -209,7 +230,6 @@ spawn_worker() {
     -e AGENT_ID_01="${agent_id}"
     -e AGENT_GITHUB_TOKEN_01_FILE=/run/secrets/agent_github_token
     -e AGENT_GIT_NAME="${agent_id}"
-    -e AGENT_GIT_EMAIL="${agent_id}@${email_domain}"
     -e HIVEMOOT_BUZZ_ROLE="${agent_id}"
     -e HIVEMOOT_CLI_UPDATE=skip
     -e FRESH_CLONE="${FRESH_CLONE:-1}"
@@ -815,6 +835,20 @@ cleanup_temp_tokens() {
   done
 }
 
+stop_schedulers() {
+  local pid=""
+
+  for pid in "${scheduler_pids[@]}"; do
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+
+  for pid in "${scheduler_pids[@]}"; do
+    wait "$pid" 2>/dev/null || true
+  done
+
+  scheduler_pids=()
+}
+
 handle_shutdown() {
   if [ "$shutdown_requested" -ne 0 ]; then
     return 0
@@ -824,11 +858,13 @@ handle_shutdown() {
   mkdir -p "$(dirname "$shutdown_flag_file")" 2>/dev/null || true
   : > "$shutdown_flag_file"
   log "Shutdown signal received; stopping new launches"
+  stop_schedulers
   stop_watchers
   stop_controller_workers
 }
 
 cleanup() {
+  stop_schedulers
   stop_watchers
   stop_controller_workers
   cleanup_temp_tokens
@@ -942,7 +978,8 @@ run_job() {
   local session_key="$6"
 
   local token_file="${agent_token_files[$agent_id]}"
-  local repo_lock_file="${repo_lock_files[$repo]:-}"
+  local lock_key="${repo}:${agent_id}"
+  local repo_lock_file="${repo_lock_files[$lock_key]:-}"
   local job_workspace="${workspaces_root}/${job_id}"
   local job_home="${homes_root}/${job_id}"
   local job_run_dir="${runs_root}/${job_id}"
@@ -957,8 +994,8 @@ run_job() {
   local log_follow_deadline=0
 
   if [ -z "$repo_lock_file" ]; then
-    ensure_repo_lock_file "$repo"
-    repo_lock_file="${repo_lock_files[$repo]}"
+    ensure_agent_lock_file "$repo" "$agent_id"
+    repo_lock_file="${repo_lock_files[$lock_key]}"
   fi
 
   mkdir -p "$job_workspace" "$job_home" "$job_run_dir" "$job_spec_dir"
@@ -979,6 +1016,7 @@ run_job() {
   write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "running" "-"
 
   if ! container_id="$(spawn_worker "$job_id" "$repo" "$agent_id" "$job_workspace" "$job_home" "$token_file" "$extra_prompt" "$session_key")"; then
+    cleanup_job_home_credentials "$job_home"
     write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "failed" "125"
     return 125
   fi
@@ -1022,6 +1060,7 @@ run_job() {
   fi
 
   "$docker_cmd" rm -f "$container_id" >/dev/null 2>&1 || true
+  cleanup_job_home_credentials "$job_home"
 
   if [ "$exit_code" -eq 0 ]; then
     write_job_status "$job_workspace" "$job_id" "$repo" "$agent_id" "$trigger_type" "completed" "$exit_code"
@@ -1043,7 +1082,7 @@ launch_job() {
   local session_key="${8:-}"
   local processing_file="${9:-}"
 
-  ensure_repo_lock_file "$repo"
+  ensure_agent_lock_file "$repo" "$agent_id"
 
   if ! wait_for_available_slot; then
     return 1
@@ -1094,10 +1133,42 @@ run_once_mode() {
   fi
 }
 
+start_agent_scheduler() {
+  local agent_id="$1"
+  local offset="$2"
+
+  (
+    trap 'exit 0' TERM INT
+
+    if [ "$offset" -gt 0 ]; then
+      log "Scheduler[${agent_id}]: initial offset sleep ${offset}s"
+      sleep "$offset" &
+      wait $! || exit 0
+    fi
+
+    while [ ! -f "$shutdown_flag_file" ]; do
+      if write_trigger_file "periodic" "$target_repo" "$agent_id" "$global_extra_prompt" "" "" ""; then
+        log "Scheduler[${agent_id}]: queued periodic trigger"
+      else
+        log "Scheduler[${agent_id}]: failed to queue trigger"
+      fi
+
+      local delay=""
+      delay="$(next_cycle_delay)"
+      log "Scheduler[${agent_id}]: next run in ${delay}s"
+      sleep "$delay" &
+      wait $! || exit 0
+    done
+  ) &
+
+  local pid=$!
+  scheduler_pids+=("$pid")
+  log "Agent scheduler started: agent=${agent_id} offset=${offset}s (pid=${pid})"
+}
+
 run_loop_mode() {
-  local next_periodic_at=0
-  local now=0
-  local delay=0
+  local agent_id=""
+  local offset=""
 
   run_queue_maintenance 1
 
@@ -1105,19 +1176,38 @@ run_loop_mode() {
     start_mention_watchers
   fi
 
+  # Launch per-agent schedulers with deterministic hash-based offsets
+  for agent_id in "${agent_ids[@]}"; do
+    offset="$(compute_agent_offset "$target_repo" "$agent_id" "$periodic_interval")"
+    start_agent_scheduler "$agent_id" "$offset"
+  done
+
+  log "Per-agent schedulers running; entering queue processing loop"
+
+  # Main loop: process queue, reap finished jobs, run maintenance.
+  # Also monitors scheduler liveness — if all schedulers exit (e.g.,
+  # total API outage causing max_failures on every agent), break out
+  # so the controller exits non-zero and the orchestrator can restart.
   while [ "$shutdown_requested" -eq 0 ]; do
-    now="$(date +%s)"
-
-    if [ "$now" -ge "$next_periodic_at" ]; then
-      queue_periodic_cycle
-      delay="$(next_cycle_delay)"
-      next_periodic_at=$((now + delay))
-      log "Next periodic cycle in ${delay}s"
-    fi
-
     run_queue_maintenance 0
     process_queue
     reap_finished_jobs
+
+    # Check if any scheduler subshell is still alive
+    local live_schedulers=0
+    local pid=""
+    for pid in "${scheduler_pids[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        live_schedulers=$((live_schedulers + 1))
+      fi
+    done
+
+    if [ "${#scheduler_pids[@]}" -gt 0 ] && [ "$live_schedulers" -eq 0 ]; then
+      log "All periodic schedulers have exited; shutting down"
+      shutdown_requested=1
+      failed_jobs=$((failed_jobs + 1))
+      break
+    fi
 
     sleep 1 &
     wait $! || true
@@ -1170,7 +1260,6 @@ queue_root="${workspace_root}/queue"
 watch_state_root="${workspace_root}/watch-state"
 lock_dir="${CONTROLLER_LOCK_DIR:-/tmp/hivemoot-controller-locks}"
 token_tmp_root="${CONTROLLER_TOKEN_TMP_ROOT:-/tmp/hivemoot-controller-token-files}"
-email_domain="${AGENT_GIT_EMAIL_DOMAIN:-agents.local}"
 global_extra_prompt="${AGENT_EXTRA_PROMPT:-}"
 agent_timeout_seconds="${AGENT_TIMEOUT_SECONDS:-1800}"
 target_repo="${TARGET_REPO:-}"
@@ -1184,6 +1273,7 @@ last_queue_maintenance_epoch=0
 declare -a temp_token_files=()
 declare -a running_pids=()
 declare -a watcher_pids=()
+declare -a scheduler_pids=()
 declare -A pid_to_job_id=()
 declare -A pid_to_repo=()
 declare -A pid_to_agent=()
@@ -1254,8 +1344,6 @@ fi
 mkdir -p "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root"
 chmod 700 "$workspace_root" "$jobs_root" "$runs_root" "$workspaces_root" "$homes_root" "$queue_root" "$watch_state_root" "$lock_dir" "$token_tmp_root" 2>/dev/null || true
 rm -f "$shutdown_flag_file"
-ensure_repo_lock_file "$target_repo"
-
 declare -A seen_agents=()
 declare -a agent_ids=()
 declare -a agent_tokens=()
@@ -1310,6 +1398,7 @@ for index in "${!agent_ids[@]}"; do
   chmod 600 "$token_file" 2>/dev/null || true
   temp_token_files+=("$token_file")
   agent_token_files["$aid"]="$token_file"
+  ensure_agent_lock_file "$target_repo" "$aid"
 done
 
 for slot in $(seq 1 "$max_agents"); do

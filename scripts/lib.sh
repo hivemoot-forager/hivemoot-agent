@@ -159,6 +159,46 @@ validate_agent_id() {
   esac
 }
 
+# Deterministic offset within an interval for staggered scheduling.
+# md5(repo:agent_id) % interval → seconds. Spreads agents evenly so
+# they never cluster at the same wake-up time.
+compute_agent_offset() {
+  local repo="$1"
+  local agent_id="$2"
+  local interval="$3"
+  local hash_input="${repo}:${agent_id}"
+  local hash_hex=""
+
+  if [ "$interval" -le 1 ]; then
+    printf '0'
+    return 0
+  fi
+
+  # Use first 8 hex digits (32 bits) — enough for any practical interval.
+  # md5sum on Linux, md5 on macOS.
+  if command -v md5sum >/dev/null 2>&1; then
+    hash_hex="$(printf '%s' "$hash_input" | md5sum | cut -c1-8)"
+  elif command -v md5 >/dev/null 2>&1; then
+    hash_hex="$(printf '%s' "$hash_input" | md5 -q | cut -c1-8)"
+  else
+    # Fallback: cksum is POSIX and always available
+    local cksum_val=""
+    cksum_val="$(printf '%s' "$hash_input" | cksum | cut -d' ' -f1)"
+    printf '%s' "$((cksum_val % interval))"
+    return 0
+  fi
+
+  # Guard against empty output — an empty hash_hex would cause a bash
+  # arithmetic syntax error in the 16# expansion below.
+  if [ -z "$hash_hex" ]; then
+    printf '0'
+    return 0
+  fi
+
+  # shellcheck disable=SC2004  # 16# prefix requires no $ on hash_hex
+  printf '%s' "$(( 16#${hash_hex} % interval ))"
+}
+
 load_slot_token() {
   local suffix="$1"
   local token_var="AGENT_GITHUB_TOKEN_${suffix}"
@@ -300,4 +340,34 @@ seed_provider_auth() {
 
   # OpenCode: auto-generate config and auth.json if missing
   generate_opencode_config "$agent_home"
+}
+
+# Create standard agent home subdirectories, seed provider auth credentials,
+# and write a .profile so agent subprocesses can find npm-installed binaries.
+# Call this once per agent before launching run-once.sh.
+init_agent_home() {
+  local agent_home="$1"
+
+  mkdir -p \
+    "$agent_home/.config" \
+    "$agent_home/.cache" \
+    "$agent_home/.local" \
+    "$agent_home/.local/share"
+  chmod 700 \
+    "$agent_home/.config" \
+    "$agent_home/.cache" \
+    "$agent_home/.local" \
+    "$agent_home/.local/share" 2>/dev/null || true
+
+  # Seed only auth credentials into each agent home; skip session state
+  # (conversation caches, memory, history) to prevent cross-run leakage.
+  seed_provider_auth "$agent_home"
+
+  # Login shells (bash -lc) reset PATH from /etc/profile, losing the
+  # Docker ENV that includes the npm global bin directory. Write a
+  # .profile so agent subprocesses (codex/gemini/claude CLI tools)
+  # can find hivemoot and other npm-installed binaries.
+  # shellcheck disable=SC2016  # literal ${PATH} intended for .profile
+  printf 'export PATH="/usr/local/share/npm-global/bin:${PATH}"\n' \
+    > "$agent_home/.profile"
 }
