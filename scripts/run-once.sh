@@ -673,7 +673,11 @@ case "$provider" in
       esac
     fi
 
-    codex_cmd_common=(--dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --json)
+    codex_cmd_common=(--full-auto \
+      --config 'shell_environment_policy.inherit=none' \
+      --config 'shell_environment_policy.include_only=["OPENAI_API_KEY","GH_TOKEN","GITHUB_TOKEN","PATH","HOME","USER","SHELL","TERM","LANG","LC_ALL"]' \
+      --config 'sandbox_workspace_write.network_access=true' \
+      --skip-git-repo-check --json)
     if [ -n "$agent_model" ]; then
       codex_cmd_common+=(--model "$agent_model")
     fi
