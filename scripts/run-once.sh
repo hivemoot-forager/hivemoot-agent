@@ -674,8 +674,6 @@ case "$provider" in
     fi
 
     codex_cmd_common=(--full-auto \
-      --config 'shell_environment_policy.inherit=none' \
-      --config 'shell_environment_policy.include_only=["GH_TOKEN","GITHUB_TOKEN","PATH","HOME","USER","SHELL","TERM","LANG","LC_ALL"]' \
       --config 'sandbox_workspace_write.network_access=true' \
       --skip-git-repo-check --json)
     if [ -n "$agent_model" ]; then
