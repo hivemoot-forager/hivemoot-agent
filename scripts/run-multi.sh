@@ -9,24 +9,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "${SCRIPT_DIR}/lib.sh"
 
-for secret_var in \
-  OPENAI_API_KEY \
-  GOOGLE_API_KEY \
-  GEMINI_API_KEY \
-  ANTHROPIC_API_KEY \
-  OPENROUTER_API_KEY \
-  CLAUDE_CODE_OAUTH_TOKEN \
-  KILOCODE_TOKEN \
-  ZAI_API_KEY
-do
-  load_secret_from_file "$secret_var"
-done
+load_provider_secrets
 
 # shellcheck source=scripts/opencode-helpers.sh
 . "${SCRIPT_DIR}/opencode-helpers.sh"
 
 workspace_root="${WORKSPACE_ROOT:-/workspace}"
-email_domain="${AGENT_GIT_EMAIL_DOMAIN:-agents.local}"
 global_extra_prompt="${AGENT_EXTRA_PROMPT:-}"
 target_repo="${TARGET_REPO:-}"
 launch_jitter_min="${LAUNCH_JITTER_MIN_SECS:-120}"
@@ -187,82 +175,9 @@ preflight_check() {
   fi
 
   # Provider auth check
-  case "$provider" in
-    codex)
-      local resolved="$auth_mode"
-      [ "$resolved" = "auto" ] && resolved=$( [ -n "${OPENAI_API_KEY:-}" ] && echo "api_key" || echo "subscription" )
-      if [ "$resolved" = "api_key" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
-        echo "Pre-flight: OPENAI_API_KEY missing for codex + api_key mode." >&2
-        failures=$((failures + 1))
-      fi
-      ;;
-    gemini)
-      local resolved="$auth_mode"
-      [ "$resolved" = "auto" ] && resolved=$( { [ -n "${GOOGLE_API_KEY:-}" ] || [ -n "${GEMINI_API_KEY:-}" ]; } && echo "api_key" || echo "subscription" )
-      if [ "$resolved" = "api_key" ] && [ -z "${GOOGLE_API_KEY:-}" ] && [ -z "${GEMINI_API_KEY:-}" ]; then
-        echo "Pre-flight: GOOGLE_API_KEY/GEMINI_API_KEY missing for gemini + api_key mode." >&2
-        failures=$((failures + 1))
-      fi
-      ;;
-    claude)
-      local resolved="$auth_mode"
-      [ "$resolved" = "auto" ] && resolved=$( [ -n "${ANTHROPIC_API_KEY:-}" ] && echo "api_key" || echo "subscription" )
-      if [ "$resolved" = "api_key" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-        echo "Pre-flight: ANTHROPIC_API_KEY missing for claude + api_key mode." >&2
-        failures=$((failures + 1))
-      fi
-      ;;
-    kilo)
-      if [ -z "${KILOCODE_TOKEN:-}" ]; then
-        if [ -z "${KILO_PROVIDER:-}" ]; then
-          echo "Pre-flight: KILO_PROVIDER is required for kilo (unless KILOCODE_TOKEN is set for gateway mode)." >&2
-          failures=$((failures + 1))
-        else
-          case "${KILO_PROVIDER}" in
-            anthropic)
-              if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-                echo "Pre-flight: ANTHROPIC_API_KEY missing for KILO_PROVIDER=anthropic." >&2
-                failures=$((failures + 1))
-              fi
-              ;;
-            openai)
-              if [ -z "${OPENAI_API_KEY:-}" ]; then
-                echo "Pre-flight: OPENAI_API_KEY missing for KILO_PROVIDER=openai." >&2
-                failures=$((failures + 1))
-              fi
-              ;;
-            google)
-              if [ -z "${GOOGLE_API_KEY:-}" ] && [ -z "${GEMINI_API_KEY:-}" ]; then
-                echo "Pre-flight: GOOGLE_API_KEY/GEMINI_API_KEY missing for KILO_PROVIDER=google." >&2
-                failures=$((failures + 1))
-              fi
-              ;;
-            openrouter)
-              if [ -z "${OPENROUTER_API_KEY:-}" ]; then
-                echo "Pre-flight: OPENROUTER_API_KEY missing for KILO_PROVIDER=openrouter." >&2
-                failures=$((failures + 1))
-              fi
-              ;;
-          esac
-        fi
-      fi
-      ;;
-    opencode)
-      if [ -n "${OPENCODE_PROVIDER:-}" ]; then
-        case "${OPENCODE_PROVIDER}" in
-          zai)
-            if [ -z "${ZAI_API_KEY:-}" ]; then
-              echo "Pre-flight: ZAI_API_KEY missing for OPENCODE_PROVIDER=zai." >&2
-              failures=$((failures + 1))
-            fi
-            ;;
-        esac
-      elif [ ! -f "/home/node/.local/share/opencode/auth.json" ]; then
-        echo "Pre-flight: OpenCode auth not configured. Set OPENCODE_PROVIDER + API key, or run: opencode auth login." >&2
-        failures=$((failures + 1))
-      fi
-      ;;
-  esac
+  local auth_failures=0
+  preflight_check_provider_auth "$provider" "$auth_mode" || auth_failures=$?
+  failures=$((failures + auth_failures))
 
   # Validate ALL agent tokens against GitHub API
   local index
@@ -365,7 +280,6 @@ for index in "${!agent_ids[@]}"; do
     export LOG_DIR="$agent_log_dir"
     export AGENT_GITHUB_TOKEN_FILE="$token_file"
     export AGENT_GIT_NAME="$agent_id"
-    export AGENT_GIT_EMAIL="${agent_id}@${email_domain}"
     export HIVEMOOT_BUZZ_ROLE="$agent_id"
     export AGENT_EXTRA_PROMPT="$agent_extra_prompt"
 

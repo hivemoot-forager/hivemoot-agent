@@ -97,19 +97,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "${SCRIPT_DIR}/lib.sh"
 
-for secret_var in \
-  AGENT_GITHUB_TOKEN \
-  OPENAI_API_KEY \
-  GOOGLE_API_KEY \
-  GEMINI_API_KEY \
-  ANTHROPIC_API_KEY \
-  OPENROUTER_API_KEY \
-  CLAUDE_CODE_OAUTH_TOKEN \
-  KILOCODE_TOKEN \
-  ZAI_API_KEY
-do
-  load_secret_from_file "$secret_var"
-done
+load_secret_from_file AGENT_GITHUB_TOKEN
+load_provider_secrets
 
 # shellcheck source=scripts/opencode-helpers.sh
 . "${SCRIPT_DIR}/opencode-helpers.sh"
@@ -609,6 +598,10 @@ clone_repo
 safe_agent_name="$(printf '%s' "$agent_name" | tr -c '[:alnum:]._-' '_')"
 run_id="$(date '+%Y%m%d-%H%M%S')-${provider}-${safe_agent_name}"
 log_file="${log_dir}/${run_id}.log"
+events_file="${log_dir}/${run_id}.events.jsonl"
+health_file="${log_dir}/health.json"
+_event_seq=0
+run_start_epoch="$(date +%s)"
 
 cmd=()
 run_in_repo=0
@@ -1012,6 +1005,8 @@ run_selected_command() {
 # Start with merged log sentinel; run_selected_command updates this to the
 # per-attempt file after each run.
 last_command_log="$log_file"
+_event_seq=$((_event_seq + 1))
+log_event "$events_file" run.start "$agent_name" "$run_id" "$_event_seq"
 run_selected_command
 
 # Strict policy: at most one resume failure before forcing fresh.
@@ -1073,6 +1068,24 @@ fi
 
 if [ "$exit_code" -eq 124 ]; then
   log "Run timed out after ${timeout_secs}s"
+fi
+
+run_end_epoch="$(date +%s)"
+run_duration_secs=$((run_end_epoch - run_start_epoch))
+_event_seq=$((_event_seq + 1))
+if [ "$exit_code" -eq 0 ]; then
+  log_event "$events_file" run.complete "$agent_name" "$run_id" "$_event_seq" \
+    "\"duration_secs\":${run_duration_secs},\"outcome\":\"success\""
+  write_health_snapshot "$health_file" "$agent_name" "$run_id" run.complete 0
+else
+  _run_error="run_failed"
+  if [ "$exit_code" -eq 124 ]; then
+    _run_error="timeout"
+  fi
+  _consecutive_failures="${AGENT_CONSECUTIVE_FAILURES:-0}"
+  log_event "$events_file" run.error "$agent_name" "$run_id" "$_event_seq" \
+    "\"error\":\"${_run_error}\",\"exit_code\":${exit_code},\"consecutive_failures\":${_consecutive_failures}"
+  write_health_snapshot "$health_file" "$agent_name" "$run_id" run.error "$_consecutive_failures"
 fi
 
 if [ -n "${last_command_log:-}" ] && [ "$last_command_log" != "$log_file" ] && [ -f "$last_command_log" ]; then
