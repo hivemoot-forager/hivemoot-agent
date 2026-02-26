@@ -11,6 +11,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
 load_provider_secrets
 
+# Detect DOCKER_PROVIDER/AGENT_PROVIDER mismatch early, before any auth setup.
+# DOCKER_PROVIDER is baked in at image build time (defaults to "all").
+# "all" images include every provider CLI, so no mismatch is possible.
+built_provider="${DOCKER_PROVIDER:-all}"
+runtime_provider="${AGENT_PROVIDER:-claude}"
+if [ "$built_provider" != "all" ] && [ "$runtime_provider" != "$built_provider" ]; then
+  echo "Provider mismatch: image was built for '${built_provider}' (DOCKER_PROVIDER) but AGENT_PROVIDER='${runtime_provider}'." >&2
+  echo "Rebuild with the matching provider: DOCKER_PROVIDER=${runtime_provider} docker compose build" >&2
+  exit 1
+fi
+
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
   mkdir -p "${HOME}/.claude"
   # Use a far-future local expiry so Claude Code treats the bootstrap token
