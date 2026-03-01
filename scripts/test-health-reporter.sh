@@ -834,6 +834,7 @@ echo "Running health reporter tests"
 echo ""
 
 setup
+trap teardown EXIT
 
 echo "  update_agent_stats:"
 run_test test_stats_creates_new_file
