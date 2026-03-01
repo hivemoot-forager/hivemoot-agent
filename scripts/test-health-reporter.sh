@@ -16,7 +16,8 @@ setup() {
 }
 
 teardown() {
-  local rc=$?
+  local rc
+  rc=$?
   if [ -n "${TEST_TMP:-}" ]; then
     rm -rf "$TEST_TMP"
     TEST_TMP=""
