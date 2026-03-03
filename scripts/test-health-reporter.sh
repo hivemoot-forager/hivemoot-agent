@@ -859,13 +859,13 @@ MOCK
   chmod +x "${mock_dir}/curl"
 
   local original_path="$PATH"
-  PATH="${mock_dir}:$PATH"
+  set_mock_path "$mock_dir"
   # shellcheck disable=SC2034
   HEALTH_REPORT_URL="http://localhost/api/agent-health"
 
   send_heartbeat "forager" "hivemoot/sandbox" "" "" 2>/dev/null || true
 
-  PATH="$original_path"
+  restore_path "$original_path"
 
   [ -f "$captured_file" ] || fail "heartbeat payload was not captured"
 
@@ -902,13 +902,13 @@ MOCK
   chmod +x "${mock_dir}/curl"
 
   local original_path="$PATH"
-  PATH="${mock_dir}:$PATH"
+  set_mock_path "$mock_dir"
   # shellcheck disable=SC2034
   HEALTH_REPORT_URL="http://localhost/api/agent-health"
 
   send_heartbeat "forager" "hivemoot/sandbox" "" "2026-03-03T12:00:00Z" 2>/dev/null || true
 
-  PATH="$original_path"
+  restore_path "$original_path"
 
   [ -f "$captured_file" ] || fail "heartbeat payload was not captured"
   local next_val
@@ -936,13 +936,13 @@ MOCK
   chmod +x "${mock_dir}/curl"
 
   local original_path="$PATH"
-  PATH="${mock_dir}:$PATH"
+  set_mock_path "$mock_dir"
   # shellcheck disable=SC2034
   HEALTH_REPORT_URL="http://localhost/api/agent-health"
 
   send_heartbeat "forager" "hivemoot/sandbox" "" "" 2>/dev/null || true
 
-  PATH="$original_path"
+  restore_path "$original_path"
 
   [ -f "$captured_file" ] || fail "heartbeat payload was not captured"
   local has_next
