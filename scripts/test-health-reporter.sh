@@ -829,6 +829,128 @@ MOCK
   pass "omits next_run_at from payload when empty"
 }
 
+# ── send_heartbeat tests ─────────────────────────────────────────
+
+test_heartbeat_skips_when_url_empty() {
+  source_reporter
+  HEALTH_REPORT_URL=""
+  if ! send_heartbeat "agent" "owner/repo" "" "" 2>/dev/null; then
+    fail "send_heartbeat should return 0 when HEALTH_REPORT_URL is empty"
+  fi
+  pass "heartbeat skips when HEALTH_REPORT_URL is empty"
+}
+
+test_heartbeat_sends_minimal_payload() {
+  source_reporter
+  local mock_dir="${TEST_TMP}/mock-hb-minimal"
+  mkdir -p "$mock_dir"
+
+  local captured_file="${mock_dir}/captured-payload"
+  cat > "${mock_dir}/curl" <<MOCK
+#!/usr/bin/env bash
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    -d) shift; printf '%s' "\$1" > "${captured_file}"; shift ;;
+    *) shift ;;
+  esac
+done
+echo "200"
+MOCK
+  chmod +x "${mock_dir}/curl"
+
+  local original_path="$PATH"
+  PATH="${mock_dir}:$PATH"
+  # shellcheck disable=SC2034
+  HEALTH_REPORT_URL="http://localhost/api/agent-health"
+
+  send_heartbeat "forager" "hivemoot/sandbox" "" "" 2>/dev/null || true
+
+  PATH="$original_path"
+
+  [ -f "$captured_file" ] || fail "heartbeat payload was not captured"
+
+  local outcome_val agent_val repo_val fields
+  outcome_val="$(jq -r '.outcome' "$captured_file")"
+  agent_val="$(jq -r '.agent_id' "$captured_file")"
+  repo_val="$(jq -r '.repo' "$captured_file")"
+  fields="$(jq -r 'keys | .[]' "$captured_file" | sort | tr '\n' ' ' | sed 's/ $//')"
+
+  [ "$outcome_val" = "heartbeat" ] || fail "expected outcome=heartbeat, got ${outcome_val}"
+  [ "$agent_val" = "forager" ] || fail "expected agent_id=forager, got ${agent_val}"
+  [ "$repo_val" = "hivemoot/sandbox" ] || fail "expected repo=hivemoot/sandbox, got ${repo_val}"
+  # Must NOT include run_id, duration_secs, or consecutive_failures
+  [ "$fields" = "agent_id outcome repo" ] || fail "unexpected heartbeat fields: ${fields}"
+  pass "heartbeat payload is minimal (no run_id, duration_secs, or consecutive_failures)"
+}
+
+test_heartbeat_includes_next_run_at() {
+  source_reporter
+  local mock_dir="${TEST_TMP}/mock-hb-next-run"
+  mkdir -p "$mock_dir"
+
+  local captured_file="${mock_dir}/captured-payload"
+  cat > "${mock_dir}/curl" <<MOCK
+#!/usr/bin/env bash
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    -d) shift; printf '%s' "\$1" > "${captured_file}"; shift ;;
+    *) shift ;;
+  esac
+done
+echo "200"
+MOCK
+  chmod +x "${mock_dir}/curl"
+
+  local original_path="$PATH"
+  PATH="${mock_dir}:$PATH"
+  # shellcheck disable=SC2034
+  HEALTH_REPORT_URL="http://localhost/api/agent-health"
+
+  send_heartbeat "forager" "hivemoot/sandbox" "" "2026-03-03T12:00:00Z" 2>/dev/null || true
+
+  PATH="$original_path"
+
+  [ -f "$captured_file" ] || fail "heartbeat payload was not captured"
+  local next_val
+  next_val="$(jq -r '.next_run_at' "$captured_file")"
+  [ "$next_val" = "2026-03-03T12:00:00Z" ] || fail "expected next_run_at='2026-03-03T12:00:00Z', got '${next_val}'"
+  pass "heartbeat includes next_run_at when provided"
+}
+
+test_heartbeat_omits_next_run_at_when_absent() {
+  source_reporter
+  local mock_dir="${TEST_TMP}/mock-hb-no-next-run"
+  mkdir -p "$mock_dir"
+
+  local captured_file="${mock_dir}/captured-payload"
+  cat > "${mock_dir}/curl" <<MOCK
+#!/usr/bin/env bash
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    -d) shift; printf '%s' "\$1" > "${captured_file}"; shift ;;
+    *) shift ;;
+  esac
+done
+echo "200"
+MOCK
+  chmod +x "${mock_dir}/curl"
+
+  local original_path="$PATH"
+  PATH="${mock_dir}:$PATH"
+  # shellcheck disable=SC2034
+  HEALTH_REPORT_URL="http://localhost/api/agent-health"
+
+  send_heartbeat "forager" "hivemoot/sandbox" "" "" 2>/dev/null || true
+
+  PATH="$original_path"
+
+  [ -f "$captured_file" ] || fail "heartbeat payload was not captured"
+  local has_next
+  has_next="$(jq 'has("next_run_at")' "$captured_file")"
+  [ "$has_next" = "false" ] || fail "expected next_run_at to be absent when not provided"
+  pass "heartbeat omits next_run_at when not provided"
+}
+
 # ── run all tests ────────────────────────────────────────────────
 
 echo "Running health reporter tests"
@@ -897,6 +1019,13 @@ run_test test_sends_correct_payload
 run_test test_sends_optional_fields_on_failure
 run_test test_sends_next_run_at_when_provided
 run_test test_omits_next_run_at_when_empty
+echo ""
+
+echo "  Heartbeat:"
+run_test test_heartbeat_skips_when_url_empty
+run_test test_heartbeat_sends_minimal_payload
+run_test test_heartbeat_includes_next_run_at
+run_test test_heartbeat_omits_next_run_at_when_absent
 echo ""
 
 echo "PASS: ${TESTS_PASSED}/${TESTS_RUN} health reporter tests"
