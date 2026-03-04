@@ -1633,7 +1633,7 @@ fire_heartbeats() {
   for agent_id in "${agent_ids[@]}"; do
     token_file="${agent_token_files[$agent_id]:-}"
     send_heartbeat "$agent_id" "$target_repo" "$token_file" "$next_run_at" || true
-    log "Heartbeat sent: agent=${agent_id}"
+    log "Heartbeat attempted: agent=${agent_id}"
   done
 }
 
