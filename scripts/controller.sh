@@ -1146,8 +1146,11 @@ run_job() {
   # Task failure reporting: safety net for crashes/OOM where run-task.sh
   # could not self-report. Best-effort: errors never affect the run outcome.
   if [ "$exit_code" -ne 0 ] && [ "$trigger_type" = "task" ] && [ -n "$task_id" ]; then
-    report_task_failure_from_controller "$task_id" "$exit_code" || true
-    log "Task failure reported to backend: task_id=${task_id} exit_code=${exit_code}"
+    if report_task_failure_from_controller "$task_id" "$exit_code"; then
+      log "Task failure reported to backend: task_id=${task_id} exit_code=${exit_code}"
+    else
+      log "Task failure report to backend failed (best-effort): task_id=${task_id} exit_code=${exit_code}"
+    fi
   fi
 
   "$docker_cmd" rm -f "$container_id" >/dev/null 2>&1 || true
