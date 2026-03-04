@@ -207,6 +207,51 @@ cleanup_job_home_credentials() {
   rmdir "${job_home}/.codex" 2>/dev/null || true
 }
 
+# Send a task update (heartbeat or fail) to the execute endpoint from the
+# controller. Used as a safety net when the worker cannot self-report (crash,
+# OOM, or timeout before run-task.sh completes). Best-effort: errors are
+# logged but never affect the caller's flow.
+#
+# Usage:
+#   post_task_update_from_controller <task_id> heartbeat
+#   post_task_update_from_controller <task_id> fail <error-message>
+#
+# Requires globals: task_execute_base_url, task_executor_token
+post_task_update_from_controller() {
+  local task_id="$1"
+  local action="$2"
+  local error_msg="${3:-}"
+  local url=""
+  local payload=""
+
+  if [ -z "${task_execute_base_url:-}" ] || [ -z "${task_executor_token:-}" ]; then
+    return 0
+  fi
+
+  case "$action" in
+    heartbeat)
+      url="${task_execute_base_url%/}/${task_id}/heartbeat"
+      payload='{"action":"heartbeat"}'
+      ;;
+    fail)
+      url="${task_execute_base_url%/}/${task_id}/execute"
+      payload="$(jq -cn --arg action "fail" --arg error "$error_msg" \
+        '{action: $action, error: $error}')"
+      ;;
+    *)
+      log "post_task_update_from_controller: unsupported action: ${action}"
+      return 1
+      ;;
+  esac
+
+  curl -sf -X POST "$url" \
+    -H "Authorization: Bearer ${task_executor_token}" \
+    -H "Content-Type: application/json" \
+    -d "$payload" \
+    --max-time 10 \
+    >/dev/null 2>&1
+}
+
 spawn_worker() {
   local job_id="$1"
   local repo="$2"
@@ -1084,10 +1129,34 @@ run_job() {
   "$docker_cmd" logs -f "$container_id" > "$container_log_file" 2>&1 &
   log_pid=$!
 
+  # Task heartbeat: while the worker container is running, send periodic
+  # heartbeats to the task execute endpoint so the backend knows the job is
+  # still alive. TASK_HEARTBEAT_INTERVAL_SECS=0 disables it.
+  local task_heartbeat_pid=0
+  local task_heartbeat_interval="${TASK_HEARTBEAT_INTERVAL_SECS:-30}"
+  if [ "$trigger_type" = "task" ] && [ -n "$task_id" ] && \
+     [ -n "${task_execute_base_url:-}" ] && [ -n "${task_executor_token:-}" ] && \
+     [ "$task_heartbeat_interval" -gt 0 ]; then
+    (
+      while sleep "$task_heartbeat_interval"; do
+        post_task_update_from_controller "$task_id" "heartbeat" || true
+        log "Task heartbeat sent: task_id=${task_id}"
+      done
+    ) &
+    task_heartbeat_pid=$!
+  fi
+
   if wait_output="$("$docker_cmd" wait "$container_id" 2>&1)"; then
     wait_status=0
   else
     wait_status=$?
+  fi
+
+  # Stop heartbeat loop immediately after container exits.
+  if [ "$task_heartbeat_pid" -gt 0 ]; then
+    kill "$task_heartbeat_pid" 2>/dev/null || true
+    wait "$task_heartbeat_pid" 2>/dev/null || true
+    task_heartbeat_pid=0
   fi
 
   # Give `docker logs -f` a short grace window to exit naturally after container stop.
@@ -1114,6 +1183,18 @@ run_job() {
         exit_code=125
         ;;
     esac
+  fi
+
+  # Task failure reporting: when the worker exits non-zero, report failure to
+  # the backend from the controller. This is a safety net for cases where
+  # run-task.sh itself crashed before it could self-report (OOM, container
+  # crash). Best-effort: errors are logged but never affect the run outcome.
+  if [ "$exit_code" -ne 0 ] && [ "$trigger_type" = "task" ] && \
+     [ -n "$task_id" ] && [ -n "${task_execute_base_url:-}" ] && \
+     [ -n "${task_executor_token:-}" ]; then
+    post_task_update_from_controller "$task_id" "fail" \
+      "Worker exited with code ${exit_code}" || true
+    log "Task failure reported to backend: task_id=${task_id} exit_code=${exit_code}"
   fi
 
   "$docker_cmd" rm -f "$container_id" >/dev/null 2>&1 || true
