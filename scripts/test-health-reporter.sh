@@ -951,6 +951,53 @@ MOCK
   pass "heartbeat omits next_run_at when not provided"
 }
 
+test_heartbeat_bounded_on_slow_backend() {
+  source_reporter
+  local mock_dir="${TEST_TMP}/mock-hb-bounded"
+  mkdir -p "$mock_dir"
+
+  local counter_file="${mock_dir}/call-count"
+  local maxtime_file="${mock_dir}/max-time-arg"
+  echo 0 > "$counter_file"
+
+  # Mock curl that captures --max-time and the call count, then returns a
+  # network error (exit 1, no output). This exercises the retry guard: with
+  # HEALTH_REPORT_MAX_RETRIES=0 the function must call curl exactly once.
+  cat > "${mock_dir}/curl" <<MOCK
+#!/usr/bin/env bash
+count=\$(cat "${counter_file}")
+echo \$(( count + 1 )) > "${counter_file}"
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    --max-time) shift; echo "\$1" > "${maxtime_file}"; shift ;;
+    *) shift ;;
+  esac
+done
+exit 1
+MOCK
+  chmod +x "${mock_dir}/curl"
+
+  local original_path="$PATH"
+  set_mock_path "$mock_dir"
+  HEALTH_REPORT_URL="http://localhost/api/agent-health"
+  HEALTH_REPORT_MAX_RETRIES=5
+  HEALTH_REPORT_TIMEOUT_SECS=30
+
+  send_heartbeat "forager" "hivemoot/sandbox" "" "" 2>/dev/null || true
+
+  restore_path "$original_path"
+
+  local call_count max_time_used
+  call_count="$(cat "$counter_file")"
+  max_time_used="$(cat "$maxtime_file" 2>/dev/null || echo "missing")"
+
+  # Heartbeat must not retry — one attempt only, regardless of caller globals.
+  [ "$call_count" -eq 1 ] || fail "expected 1 curl call, got ${call_count} (heartbeat must not retry)"
+  # Heartbeat must cap --max-time at 3, not inherit caller's 30.
+  [ "$max_time_used" = "3" ] || fail "expected --max-time 3, got ${max_time_used} (heartbeat timeout not bounded)"
+  pass "heartbeat uses bounded timeout (max-time=3) and no retries against a failing backend"
+}
+
 # ── run all tests ────────────────────────────────────────────────
 
 echo "Running health reporter tests"
@@ -1026,6 +1073,7 @@ run_test test_heartbeat_skips_when_url_empty
 run_test test_heartbeat_sends_minimal_payload
 run_test test_heartbeat_includes_next_run_at
 run_test test_heartbeat_omits_next_run_at_when_absent
+run_test test_heartbeat_bounded_on_slow_backend
 echo ""
 
 echo "PASS: ${TESTS_PASSED}/${TESTS_RUN} health reporter tests"

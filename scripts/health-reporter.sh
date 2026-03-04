@@ -382,5 +382,10 @@ send_heartbeat() {
     return 0
   fi
 
-  _send_health_report "$HEALTH_REPORT_URL" "$payload" "$token_file" || true
+  # Run in a subshell with bounded timeout/retries so a down backend cannot
+  # stall the controller loop. HEALTH_REPORT_MAX_RETRIES=0 means one attempt;
+  # HEALTH_REPORT_TIMEOUT_SECS=3 caps the curl --max-time. Both are local to
+  # the subshell so caller globals are not mutated.
+  ( HEALTH_REPORT_MAX_RETRIES=0 HEALTH_REPORT_TIMEOUT_SECS=3 \
+    _send_health_report "$HEALTH_REPORT_URL" "$payload" "$token_file" ) || true
 }
