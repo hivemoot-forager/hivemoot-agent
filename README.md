@@ -349,13 +349,9 @@ The claim poll interval is configurable via `TASK_POLL_INTERVAL_SECS`
 If you use Apiary's `apiary.agents.yaml` duties, set this list from agents with
 `duty: dispatch`.
 
-While a task worker is running, the controller sends periodic heartbeats to
-`${AGENT_TASK_EXECUTE_BASE_URL}/<task_id>/heartbeat` so the backend knows the
-job is still alive between run completion reports. Heartbeat interval is
-configurable via `TASK_HEARTBEAT_INTERVAL_SECS` (default: `30` seconds,
-`0` to disable). If the worker exits non-zero, the controller immediately
-POSTs `action=fail` to the execute endpoint as a safety net for cases where
-`run-task.sh` itself crashed before self-reporting.
+If the worker exits non-zero, the controller immediately POSTs `action=fail`
+to the execute endpoint as a safety net for cases where `run-task.sh` itself
+crashed before self-reporting (OOM, container crash).
 
 Important: this script is designed to run on the host with direct `docker` access. Do not run it from inside another container with a mounted `docker.sock`.
 

@@ -1275,7 +1275,6 @@ run_task_failure_report_case() {
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
     AGENT_TIMEOUT_SECONDS="120" \
-    TASK_HEARTBEAT_INTERVAL_SECS="0" \
     bash "${repo_root}/scripts/controller.sh" || true
 
   curl_log="${case_dir}/curl-state/curl.log"
@@ -1289,45 +1288,6 @@ run_task_failure_report_case() {
   echo "PASS: task failure is reported to execute endpoint when worker exits non-zero"
 }
 
-run_task_heartbeat_case() {
-  local repo_root="$1"
-  local case_dir="$2"
-  local curl_log=""
-
-  mkdir -p "$case_dir"
-  setup_mock_docker "${case_dir}/mock-bin"
-  setup_mock_curl "${case_dir}/mock-bin"
-
-  env -i \
-    PATH="${case_dir}/mock-bin:${PATH}" \
-    HOME="${case_dir}/home" \
-    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
-    MOCK_DOCKER_WAIT_SLEEP_SECS="2" \
-    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
-    CONTROLLER_RUN_MODE="once" \
-    WATCH_TASKS="1" \
-    TASK_DISPATCH_AGENT_IDS="worker" \
-    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
-    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
-    HIVEMOOT_AGENT_TOKEN="shared-token" \
-    CONTROLLER_MAX_WORKERS="1" \
-    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
-    WORKER_IMAGE="hivemoot-agent:test" \
-    AGENT_ID_01="worker" \
-    AGENT_GITHUB_TOKEN_01="token-1" \
-    AGENT_TIMEOUT_SECONDS="120" \
-    TASK_HEARTBEAT_INTERVAL_SECS="1" \
-    bash "${repo_root}/scripts/controller.sh"
-
-  curl_log="${case_dir}/curl-state/curl.log"
-  [ -f "$curl_log" ] || fail "missing curl log in task-heartbeat case"
-
-  # At least one heartbeat must be sent during the 2s worker run with 1s interval.
-  assert_file_contains "$curl_log" "URL=https://api.example.com/api/tasks/task-claim-1/heartbeat"
-  assert_file_contains "$curl_log" "AUTH=Authorization: Bearer shared-token"
-
-  echo "PASS: task heartbeat is sent while worker container is running"
-}
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmpdir="$(mktemp -d "${repo_root}/.tmp-controller-test.XXXXXX")"
@@ -1350,5 +1310,4 @@ run_shutdown_signal_case "$repo_root" "${tmpdir}/shutdown"
 run_same_agent_concurrent_case "$repo_root" "${tmpdir}/same-agent-concurrent"
 run_periodic_deferral_cleanup_case "$repo_root" "${tmpdir}/periodic-deferral-cleanup"
 run_task_failure_report_case "$repo_root" "${tmpdir}/task-failure-report"
-run_task_heartbeat_case "$repo_root" "${tmpdir}/task-heartbeat"
 echo "PASS: controller script checks"
