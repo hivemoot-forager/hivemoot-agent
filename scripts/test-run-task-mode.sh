@@ -749,6 +749,121 @@ LOG
   unset MOCK_RUN_ONCE_LOG_JSONL_FILE
 }
 
+run_case_codex_auth_error_detected() {
+  local case_dir="${tmp_root}/case-codex-auth-error"
+  local result_path="${case_dir}/workspace/task-output/task-codex-auth/result.md"
+  local codex_log="${case_dir}/codex-auth-error.jsonl"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+  # Codex emits type=error with a known auth code and exits 0; run-task.sh
+  # must detect this and report action=fail, not action=complete.
+  cat > "$codex_log" <<'LOG'
+{"type":"thread.started","thread_id":"auth-test-thread"}
+{"type":"error","code":"invalid_api_key","message":"Incorrect API key provided"}
+LOG
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  export MOCK_RUN_ONCE_LOG_JSONL_FILE="$codex_log"
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-auth-err" \
+    AGENT_TASK_ID="task-codex-auth" \
+    AGENT_TASK_PROMPT="Do something" \
+    TARGET_REPO="owner/repo" \
+    AGENT_PROVIDER="codex" \
+    bash scripts/run-task.sh || true  # run-task.sh exits non-zero after promoting failure
+
+  assert_file_contains "$MOCK_CURL_CALLS" '"action": "fail"'
+  assert_file_not_contains "$MOCK_CURL_CALLS" '"action": "complete"'
+  assert_file_contains "$MOCK_CURL_CALLS" "invalid_api_key"
+  assert_file_contains "$MOCK_CURL_CALLS" "X-Task-Claim-Token: claim-token-auth-err"
+  unset MOCK_RUN_ONCE_LOG_JSONL_FILE
+}
+
+run_case_codex_auth_error_with_nested_code() {
+  local case_dir="${tmp_root}/case-codex-auth-nested"
+  local result_path="${case_dir}/workspace/task-output/task-codex-auth-nested/result.md"
+  local codex_log="${case_dir}/codex-auth-nested.jsonl"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+  # Codex also emits auth errors with the code nested under .error.code
+  cat > "$codex_log" <<'LOG'
+{"type":"thread.started","thread_id":"auth-nested-thread"}
+{"type":"error","error":{"code":"refresh_token_reused","message":"Refresh token has already been used"}}
+LOG
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  export MOCK_RUN_ONCE_LOG_JSONL_FILE="$codex_log"
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-nested-err" \
+    AGENT_TASK_ID="task-codex-auth-nested" \
+    AGENT_TASK_PROMPT="Do something" \
+    TARGET_REPO="owner/repo" \
+    AGENT_PROVIDER="codex" \
+    bash scripts/run-task.sh || true
+
+  assert_file_contains "$MOCK_CURL_CALLS" '"action": "fail"'
+  assert_file_not_contains "$MOCK_CURL_CALLS" '"action": "complete"'
+  assert_file_contains "$MOCK_CURL_CALLS" "refresh_token_reused"
+  unset MOCK_RUN_ONCE_LOG_JSONL_FILE
+}
+
+run_case_codex_auth_error_suppressed_when_result_exists() {
+  local case_dir="${tmp_root}/case-codex-auth-suppressed"
+  local result_path="${case_dir}/workspace/task-output/task-codex-auth-supp/result.md"
+  local codex_log="${case_dir}/codex-auth-suppressed.jsonl"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+  # If a successful item.completed result exists, auth error detection is
+  # skipped. The result takes precedence.
+  cat > "$codex_log" <<'LOG'
+{"type":"thread.started","thread_id":"auth-supp-thread"}
+{"type":"item.completed","item":{"type":"agent_message","text":"## Done\n\n- task finished"}}
+{"type":"error","code":"refresh_token_reused","message":"Refresh token has already been used"}
+LOG
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_ENV_SNAPSHOT="${case_dir}/env-snapshot.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  export MOCK_RUN_ONCE_LOG_JSONL_FILE="$codex_log"
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-supp" \
+    AGENT_TASK_ID="task-codex-auth-supp" \
+    AGENT_TASK_PROMPT="Do something" \
+    TARGET_REPO="owner/repo" \
+    AGENT_PROVIDER="codex" \
+    bash scripts/run-task.sh
+
+  assert_file_contains "$MOCK_CURL_CALLS" '"action": "complete"'
+  assert_file_not_contains "$MOCK_CURL_CALLS" '"action": "fail"'
+  assert_file_starts_with "$result_path" "## Done"
+  unset MOCK_RUN_ONCE_LOG_JSONL_FILE
+}
+
 run_case_codex_result_extraction_with_malformed_lines() {
   local case_dir="${tmp_root}/case-codex-result-malformed"
   local result_path="${case_dir}/workspace/task-output/task-codex-malformed/result.md"
@@ -955,5 +1070,8 @@ run_case_codex_sidecar_result
 run_case_codex_sidecar_fallback_to_jsonl
 run_case_gemini_text_result
 run_case_claude_text_result
+run_case_codex_auth_error_detected
+run_case_codex_auth_error_with_nested_code
+run_case_codex_auth_error_suppressed_when_result_exists
 
 echo "PASS: task mode checks"
