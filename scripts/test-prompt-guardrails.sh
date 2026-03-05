@@ -60,7 +60,9 @@ assert_contains "$run_once" "cmd=(gemini \"\${gemini_cmd_common[@]}\" --output-f
 assert_contains "$run_once" "codex_fresh_cmd=(codex exec \"\${codex_cmd_common[@]}\" \"\$prompt\")"
 # Gemini policy file must be bundled and referenced in run-once.sh.
 assert_file_exists "$repo_root/scripts/gemini-policy.toml"
+# shellcheck disable=SC2016  # single quotes are intentional: searching for literal text in run-once.sh
 assert_contains "$run_once" 'gemini_policy_file="${SCRIPT_DIR}/gemini-policy.toml"'
+# shellcheck disable=SC2016  # single quotes are intentional: searching for literal text in run-once.sh
 if ! grep -Fq -- '--policy "$gemini_policy_file"' "$run_once"; then
   fail "missing --policy passthrough in ${run_once}"
 fi
