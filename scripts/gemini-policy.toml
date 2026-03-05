@@ -1,0 +1,33 @@
+# Gemini CLI Policy Engine rules for hivemoot-agent.
+# Loaded via `gemini --policy <this-file>` in run-once.sh.
+# See: https://geminicli.com/docs/core/policy-engine
+#
+# Rules apply even in --yolo mode when modes = ["yolo"] is set.
+# This provides CLI-level tool restriction analogous to Claude's
+# --disallowedTools and Codex's shell_environment_policy.include_only.
+
+# Deny shell commands that read environment variables.
+# Mitigates env-var exfiltration via cat, env, printenv, or /proc reads.
+[[rule]]
+toolName = "run_shell_command"
+commandPrefix = [
+  "cat /proc/self/environ",
+  "cat /proc/1/environ",
+  "env",
+  "printenv",
+  "export -p",
+  "set",
+]
+decision = "deny"
+priority = 100
+modes = ["yolo", "default", "autoEdit"]
+deny_message = "Shell commands that read environment variables are not permitted"
+
+# Deny direct reads of /proc/*/environ via shell.
+[[rule]]
+toolName = "run_shell_command"
+commandRegex = "^(cat|head|tail|strings|xxd|od|hexdump)\\s+/proc/[^/]+/environ"
+decision = "deny"
+priority = 100
+modes = ["yolo", "default", "autoEdit"]
+deny_message = "Direct reads of /proc/*/environ are not permitted"

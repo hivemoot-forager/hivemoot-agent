@@ -790,10 +790,17 @@ You are resuming a prior session for this mention thread. Some data in your cont
     # In task mode, use text output format so the log IS the answer text and
     # no log parsing is required. Keep stream-json for non-task runs where
     # structured events are useful for telemetry and session diagnostics.
+    gemini_cmd_common=(--yolo)
+    # Pass the bundled policy file when present. The policy engine applies
+    # even in --yolo mode and blocks env-exfiltration shell commands.
+    gemini_policy_file="${SCRIPT_DIR}/gemini-policy.toml"
+    if [ -f "$gemini_policy_file" ]; then
+      gemini_cmd_common+=(--policy "$gemini_policy_file")
+    fi
     if [ -n "${AGENT_TASK_ID:-}" ]; then
-      cmd=(gemini --yolo --output-format text -p "$prompt")
+      cmd=(gemini "${gemini_cmd_common[@]}" --output-format text -p "$prompt")
     else
-      cmd=(gemini --yolo --output-format stream-json -p "$prompt")
+      cmd=(gemini "${gemini_cmd_common[@]}" --output-format stream-json -p "$prompt")
     fi
     if [ -n "$agent_model" ]; then
       cmd+=(-m "$agent_model")
