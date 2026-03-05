@@ -560,6 +560,9 @@ mkdir -p "$(dirname "$result_path")"
   elif [ "$run_exit_code" -eq 124 ]; then
     echo
     echo "Execution timed out."
+  elif [ -n "$auth_error_code" ]; then
+    echo
+    echo "Provider authentication failed: ${auth_error_code}"
   else
     echo
     echo "Execution failed."

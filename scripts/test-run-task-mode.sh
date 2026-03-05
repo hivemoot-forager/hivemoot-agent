@@ -785,6 +785,8 @@ LOG
   assert_file_not_contains "$MOCK_CURL_CALLS" '"action": "complete"'
   assert_file_contains "$MOCK_CURL_CALLS" "invalid_api_key"
   assert_file_contains "$MOCK_CURL_CALLS" "X-Task-Claim-Token: claim-token-auth-err"
+  assert_file_contains "$result_path" "Provider authentication failed: invalid_api_key"
+  assert_file_not_contains "$result_path" "Execution failed."
   unset MOCK_RUN_ONCE_LOG_JSONL_FILE
 }
 
@@ -822,6 +824,8 @@ LOG
   assert_file_contains "$MOCK_CURL_CALLS" '"action": "fail"'
   assert_file_not_contains "$MOCK_CURL_CALLS" '"action": "complete"'
   assert_file_contains "$MOCK_CURL_CALLS" "refresh_token_reused"
+  assert_file_contains "$result_path" "Provider authentication failed: refresh_token_reused"
+  assert_file_not_contains "$result_path" "Execution failed."
   unset MOCK_RUN_ONCE_LOG_JSONL_FILE
 }
 
