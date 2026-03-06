@@ -25,7 +25,7 @@ deny_message = "Shell commands that read environment variables are not permitted
 # Deny direct reads of /proc/*/environ via shell.
 [[rule]]
 toolName = "run_shell_command"
-commandRegex = "^(cat|head|tail|strings|xxd|od|hexdump)\\s+/proc/[^/]+/environ"
+commandRegex = "(cat|head|tail|strings|xxd|od|hexdump)\\s+/proc/[^/]+/environ"
 decision = "deny"
 priority = 100
 modes = ["yolo", "default", "autoEdit"]
