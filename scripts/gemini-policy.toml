@@ -16,7 +16,6 @@ commandPrefix = [
   "env",
   "printenv",
   "export -p",
-  "set",
 ]
 decision = "deny"
 priority = 100
