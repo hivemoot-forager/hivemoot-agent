@@ -96,6 +96,8 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "${SCRIPT_DIR}/lib.sh"
+# shellcheck source=scripts/lib-observability.sh
+. "${SCRIPT_DIR}/lib-observability.sh"
 
 load_secret_from_file AGENT_GITHUB_TOKEN
 load_secret_from_file HIVEMOOT_AGENT_TOKEN
@@ -261,6 +263,7 @@ target_repo="${TARGET_REPO:-}"
 workspace_root="${WORKSPACE_ROOT:-/workspace}"
 clone_depth="${GIT_CLONE_DEPTH:-50}"
 prompt_file="${AGENT_PROMPT_FILE:-/opt/hivemoot-agent/prompts/system/autonomous.md}"
+agent_skills="${AGENT_SKILLS:-}"
 extra_prompt="${AGENT_EXTRA_PROMPT:-}"
 agent_model="${AGENT_MODEL:-}"
 agent_tool_options_json="${AGENT_TOOL_OPTIONS_JSON:-"{}"}"
@@ -483,6 +486,21 @@ else
 Target repository: ${target_repo}
 Local repository path: ${repo_dir}
 "
+fi
+
+# Skill modules: capability blocks appended after the role context.
+if [ -n "$agent_skills" ]; then
+  skills_content=""
+  if ! skills_content="$(load_skill_prompts "$agent_skills" "/opt/hivemoot-agent/skills")"; then
+    exit 1
+  fi
+  if [ -n "$skills_content" ]; then
+    system_prompt="${system_prompt}
+
+<skills>
+${skills_content}
+</skills>"
+  fi
 fi
 
 # Technical notes block: runtime details agents should be aware of.
@@ -1152,6 +1170,11 @@ if [ -n "${HEALTH_REPORT_URL:-}" ]; then
 
   # Compute next_run_at when running on a periodic schedule.
   # PERIODIC_INTERVAL_SECS is exported by run-loop.sh; unset for standalone/mention runs.
+  # This is a nominal floor (now + interval), not a hard guarantee. On failure,
+  # run-loop.sh applies exponential backoff that can defer the actual next run
+  # beyond this timestamp. Dashboards should treat this as best-effort and avoid
+  # tight "overdue" thresholds — a run landing later than next_run_at is not
+  # necessarily late, especially when PERIODIC_INTERVAL_SECS < backoff minimums.
   _next_run_at=""
   if [ -n "${PERIODIC_INTERVAL_SECS:-}" ] && printf '%s' "$PERIODIC_INTERVAL_SECS" | grep -Eq '^[1-9][0-9]*$'; then
     _next_run_at="$(date -u -d "+${PERIODIC_INTERVAL_SECS} seconds" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
