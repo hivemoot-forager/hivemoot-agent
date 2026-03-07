@@ -301,6 +301,17 @@ validate_agent_id() {
   esac
 }
 
+validate_job_id() {
+  local job_id="$1"
+
+  case "$job_id" in
+    ''|*[!a-zA-Z0-9_-]*)
+      echo "Invalid JOB_ID: ${job_id}. Use only letters, digits, hyphens, and underscores." >&2
+      exit 1
+      ;;
+  esac
+}
+
 # Deterministic offset within an interval for staggered scheduling.
 # md5(repo:agent_id) % interval → seconds. Spreads agents evenly so
 # they never cluster at the same wake-up time.
