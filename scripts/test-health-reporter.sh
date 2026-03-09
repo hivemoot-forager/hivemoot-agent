@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Test suite for health-reporter.sh and update_agent_stats() from lib.sh.
+# Test suite for health-reporter.sh and update_agent_stats() from lib-observability.sh.
 # Runs in CI without network access — all HTTP interactions are mocked.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -16,7 +16,8 @@ setup() {
 }
 
 teardown() {
-  local rc=$?
+  local rc
+  rc=$?
   if [ -n "${TEST_TMP:-}" ]; then
     rm -rf "$TEST_TMP"
     TEST_TMP=""
@@ -41,12 +42,15 @@ run_test() {
 
 # ── helpers ──────────────────────────────────────────────────────
 
-# Source lib.sh for update_agent_stats
+# Source lib.sh and lib-observability.sh for update_agent_stats
 source_lib() {
-  # Reset the guard so we can re-source
+  # Reset the guards so we can re-source
   unset HIVEMOOT_LIB_LOADED 2>/dev/null || true
+  unset HIVEMOOT_LIB_OBSERVABILITY_LOADED 2>/dev/null || true
   # shellcheck source=scripts/lib.sh
   . "${SCRIPT_DIR}/lib.sh"
+  # shellcheck source=scripts/lib-observability.sh
+  . "${SCRIPT_DIR}/lib-observability.sh"
 }
 
 # Source health-reporter.sh with lib.sh already loaded
@@ -78,6 +82,18 @@ echo "$http_code"
 MOCK
   chmod +x "$mock_path"
   printf '%s' "$mock_path"
+}
+
+set_mock_path() {
+  local mock_dir="$1"
+  PATH="${mock_dir}:$PATH"
+  hash -r 2>/dev/null || true
+}
+
+restore_path() {
+  local original_path="$1"
+  PATH="$original_path"
+  hash -r 2>/dev/null || true
 }
 
 # Build a valid payload for testing (matches backend HealthReport schema)
@@ -816,6 +832,281 @@ MOCK
   pass "omits next_run_at from payload when empty"
 }
 
+# ── trigger field tests ───────────────────────────────────────────
+
+test_payload_includes_trigger() {
+  source_reporter
+  local payload
+  payload="$(_build_health_payload "a" "owner/repo" "run-1" "success" "10" "0" "" "" "" "scheduled")"
+  local trigger_val
+  trigger_val="$(printf '%s' "$payload" | jq -r '.trigger')"
+  [ "$trigger_val" = "scheduled" ] || fail "expected trigger=scheduled, got ${trigger_val}"
+  pass "payload includes trigger when provided"
+}
+
+test_payload_omits_trigger_when_empty() {
+  source_reporter
+  local payload
+  payload="$(build_test_payload)"
+  local has_trigger
+  has_trigger="$(printf '%s' "$payload" | jq 'has("trigger")')"
+  [ "$has_trigger" = "false" ] || fail "expected trigger absent when not provided"
+  pass "payload omits trigger when empty"
+}
+
+test_validates_valid_trigger_values() {
+  source_reporter
+  local payload_base
+  payload_base="$(build_test_payload)"
+  local trigger
+  for trigger in scheduled mention manual task; do
+    local payload
+    payload="$(printf '%s' "$payload_base" | jq --arg t "$trigger" '. + {trigger: $t}')"
+    if ! _validate_health_payload "$payload" 2>/dev/null; then
+      fail "validation should accept trigger=${trigger}"
+    fi
+  done
+  pass "accepts all valid trigger values"
+}
+
+test_validates_invalid_trigger_rejected() {
+  source_reporter
+  local payload
+  payload="$(build_test_payload)"
+  payload="$(printf '%s' "$payload" | jq '. + {trigger: "cron"}')"
+  if _validate_health_payload "$payload" 2>/dev/null; then
+    fail "validation should reject unknown trigger value"
+  fi
+  pass "rejects unknown trigger value"
+}
+
+# ── token_usage field tests ───────────────────────────────────────
+
+test_payload_includes_token_usage() {
+  source_reporter
+  local token_json='{"input_tokens":100,"output_tokens":50}'
+  local payload
+  payload="$(_build_health_payload "a" "owner/repo" "run-1" "success" "10" "0" "" "" "" "" "$token_json")"
+  local has_tu
+  has_tu="$(printf '%s' "$payload" | jq 'has("token_usage")')"
+  [ "$has_tu" = "true" ] || fail "expected token_usage to be present"
+  local in_tokens
+  in_tokens="$(printf '%s' "$payload" | jq '.token_usage.input_tokens')"
+  [ "$in_tokens" = "100" ] || fail "expected input_tokens=100, got ${in_tokens}"
+  pass "payload includes token_usage when provided"
+}
+
+test_payload_omits_token_usage_when_empty() {
+  source_reporter
+  local payload
+  payload="$(build_test_payload)"
+  local has_tu
+  has_tu="$(printf '%s' "$payload" | jq 'has("token_usage")')"
+  [ "$has_tu" = "false" ] || fail "expected token_usage absent when not provided"
+  pass "payload omits token_usage when empty"
+}
+
+test_validates_token_usage_object_passes() {
+  source_reporter
+  local payload
+  payload="$(build_test_payload)"
+  payload="$(printf '%s' "$payload" | jq '. + {token_usage: {input_tokens: 10, output_tokens: 5}}')"
+  if ! _validate_health_payload "$payload" 2>/dev/null; then
+    fail "valid token_usage object should pass validation"
+  fi
+  pass "token_usage object passes validation"
+}
+
+test_validates_token_usage_string_rejected() {
+  source_reporter
+  local payload
+  payload="$(build_test_payload)"
+  payload="$(printf '%s' "$payload" | jq '. + {token_usage: "not-an-object"}')"
+  if _validate_health_payload "$payload" 2>/dev/null; then
+    fail "validation should reject token_usage as string"
+  fi
+  pass "rejects token_usage as string"
+}
+
+test_validates_token_usage_null_passes() {
+  source_reporter
+  local payload
+  payload="$(build_test_payload)"
+  payload="$(printf '%s' "$payload" | jq '. + {token_usage: null}')"
+  if ! _validate_health_payload "$payload" 2>/dev/null; then
+    fail "null token_usage should pass validation"
+  fi
+  pass "null token_usage passes validation"
+}
+
+# ── send_heartbeat tests ─────────────────────────────────────────
+
+test_heartbeat_skips_when_url_empty() {
+  source_reporter
+  HEALTH_REPORT_URL=""
+  if ! send_heartbeat "agent" "owner/repo" "" "" 2>/dev/null; then
+    fail "send_heartbeat should return 0 when HEALTH_REPORT_URL is empty"
+  fi
+  pass "heartbeat skips when HEALTH_REPORT_URL is empty"
+}
+
+test_heartbeat_sends_minimal_payload() {
+  source_reporter
+  local mock_dir="${TEST_TMP}/mock-hb-minimal"
+  mkdir -p "$mock_dir"
+
+  local captured_file="${mock_dir}/captured-payload"
+  cat > "${mock_dir}/curl" <<MOCK
+#!/usr/bin/env bash
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    -d) shift; printf '%s' "\$1" > "${captured_file}"; shift ;;
+    *) shift ;;
+  esac
+done
+echo "200"
+MOCK
+  chmod +x "${mock_dir}/curl"
+
+  local original_path="$PATH"
+  set_mock_path "$mock_dir"
+  # shellcheck disable=SC2034
+  HEALTH_REPORT_URL="http://localhost/api/agent-health"
+
+  send_heartbeat "forager" "hivemoot/sandbox" "" "" 2>/dev/null || true
+
+  restore_path "$original_path"
+
+  [ -f "$captured_file" ] || fail "heartbeat payload was not captured"
+
+  local outcome_val agent_val repo_val fields
+  outcome_val="$(jq -r '.outcome' "$captured_file")"
+  agent_val="$(jq -r '.agent_id' "$captured_file")"
+  repo_val="$(jq -r '.repo' "$captured_file")"
+  fields="$(jq -r 'keys | .[]' "$captured_file" | sort | tr '\n' ' ' | sed 's/ $//')"
+
+  [ "$outcome_val" = "heartbeat" ] || fail "expected outcome=heartbeat, got ${outcome_val}"
+  [ "$agent_val" = "forager" ] || fail "expected agent_id=forager, got ${agent_val}"
+  [ "$repo_val" = "hivemoot/sandbox" ] || fail "expected repo=hivemoot/sandbox, got ${repo_val}"
+  # Must NOT include run_id, duration_secs, or consecutive_failures
+  [ "$fields" = "agent_id outcome repo" ] || fail "unexpected heartbeat fields: ${fields}"
+  pass "heartbeat payload is minimal (no run_id, duration_secs, or consecutive_failures)"
+}
+
+test_heartbeat_includes_next_run_at() {
+  source_reporter
+  local mock_dir="${TEST_TMP}/mock-hb-next-run"
+  mkdir -p "$mock_dir"
+
+  local captured_file="${mock_dir}/captured-payload"
+  cat > "${mock_dir}/curl" <<MOCK
+#!/usr/bin/env bash
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    -d) shift; printf '%s' "\$1" > "${captured_file}"; shift ;;
+    *) shift ;;
+  esac
+done
+echo "200"
+MOCK
+  chmod +x "${mock_dir}/curl"
+
+  local original_path="$PATH"
+  set_mock_path "$mock_dir"
+  # shellcheck disable=SC2034
+  HEALTH_REPORT_URL="http://localhost/api/agent-health"
+
+  send_heartbeat "forager" "hivemoot/sandbox" "" "2026-03-03T12:00:00Z" 2>/dev/null || true
+
+  restore_path "$original_path"
+
+  [ -f "$captured_file" ] || fail "heartbeat payload was not captured"
+  local next_val
+  next_val="$(jq -r '.next_run_at' "$captured_file")"
+  [ "$next_val" = "2026-03-03T12:00:00Z" ] || fail "expected next_run_at='2026-03-03T12:00:00Z', got '${next_val}'"
+  pass "heartbeat includes next_run_at when provided"
+}
+
+test_heartbeat_omits_next_run_at_when_absent() {
+  source_reporter
+  local mock_dir="${TEST_TMP}/mock-hb-no-next-run"
+  mkdir -p "$mock_dir"
+
+  local captured_file="${mock_dir}/captured-payload"
+  cat > "${mock_dir}/curl" <<MOCK
+#!/usr/bin/env bash
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    -d) shift; printf '%s' "\$1" > "${captured_file}"; shift ;;
+    *) shift ;;
+  esac
+done
+echo "200"
+MOCK
+  chmod +x "${mock_dir}/curl"
+
+  local original_path="$PATH"
+  set_mock_path "$mock_dir"
+  # shellcheck disable=SC2034
+  HEALTH_REPORT_URL="http://localhost/api/agent-health"
+
+  send_heartbeat "forager" "hivemoot/sandbox" "" "" 2>/dev/null || true
+
+  restore_path "$original_path"
+
+  [ -f "$captured_file" ] || fail "heartbeat payload was not captured"
+  local has_next
+  has_next="$(jq 'has("next_run_at")' "$captured_file")"
+  [ "$has_next" = "false" ] || fail "expected next_run_at to be absent when not provided"
+  pass "heartbeat omits next_run_at when not provided"
+}
+
+test_heartbeat_bounded_on_slow_backend() {
+  source_reporter
+  local mock_dir="${TEST_TMP}/mock-hb-bounded"
+  mkdir -p "$mock_dir"
+
+  local counter_file="${mock_dir}/call-count"
+  local maxtime_file="${mock_dir}/max-time-arg"
+  echo 0 > "$counter_file"
+
+  # Mock curl that captures --max-time and the call count, then returns a
+  # network error (exit 1, no output). This exercises the retry guard: with
+  # HEALTH_REPORT_MAX_RETRIES=0 the function must call curl exactly once.
+  cat > "${mock_dir}/curl" <<MOCK
+#!/usr/bin/env bash
+count=\$(cat "${counter_file}")
+echo \$(( count + 1 )) > "${counter_file}"
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    --max-time) shift; echo "\$1" > "${maxtime_file}"; shift ;;
+    *) shift ;;
+  esac
+done
+exit 1
+MOCK
+  chmod +x "${mock_dir}/curl"
+
+  local original_path="$PATH"
+  set_mock_path "$mock_dir"
+  HEALTH_REPORT_URL="http://localhost/api/agent-health"
+  HEALTH_REPORT_MAX_RETRIES=5
+  HEALTH_REPORT_TIMEOUT_SECS=30
+
+  send_heartbeat "forager" "hivemoot/sandbox" "" "" 2>/dev/null || true
+
+  restore_path "$original_path"
+
+  local call_count max_time_used
+  call_count="$(cat "$counter_file")"
+  max_time_used="$(cat "$maxtime_file" 2>/dev/null || echo "missing")"
+
+  # Heartbeat must not retry — one attempt only, regardless of caller globals.
+  [ "$call_count" -eq 1 ] || fail "expected 1 curl call, got ${call_count} (heartbeat must not retry)"
+  # Heartbeat must cap --max-time at 3, not inherit caller's 30.
+  [ "$max_time_used" = "3" ] || fail "expected --max-time 3, got ${max_time_used} (heartbeat timeout not bounded)"
+  pass "heartbeat uses bounded timeout (max-time=3) and no retries against a failing backend"
+}
 # ── run all tests ────────────────────────────────────────────────
 
 echo "Running health reporter tests"
@@ -838,6 +1129,10 @@ run_test test_payload_optional_error
 run_test test_payload_omits_empty_optionals
 run_test test_payload_optional_next_run_at
 run_test test_payload_omits_empty_next_run_at
+run_test test_payload_includes_trigger
+run_test test_payload_omits_trigger_when_empty
+run_test test_payload_includes_token_usage
+run_test test_payload_omits_token_usage_when_empty
 echo ""
 
 echo "  Validation — required fields:"
@@ -854,6 +1149,14 @@ echo "  Validation — enums:"
 run_test test_validates_invalid_outcome_enum
 run_test test_validates_valid_outcome_values
 run_test test_validates_skipped_not_valid_outcome
+run_test test_validates_valid_trigger_values
+run_test test_validates_invalid_trigger_rejected
+echo ""
+
+echo "  Validation — token_usage:"
+run_test test_validates_token_usage_object_passes
+run_test test_validates_token_usage_string_rejected
+run_test test_validates_token_usage_null_passes
 echo ""
 
 echo "  Validation — numerics:"
@@ -884,5 +1187,15 @@ run_test test_sends_optional_fields_on_failure
 run_test test_sends_next_run_at_when_provided
 run_test test_omits_next_run_at_when_empty
 echo ""
+
+echo "  Heartbeat:"
+run_test test_heartbeat_skips_when_url_empty
+run_test test_heartbeat_sends_minimal_payload
+run_test test_heartbeat_includes_next_run_at
+run_test test_heartbeat_omits_next_run_at_when_absent
+run_test test_heartbeat_bounded_on_slow_backend
+echo ""
+
+teardown
 
 echo "PASS: ${TESTS_PASSED}/${TESTS_RUN} health reporter tests"

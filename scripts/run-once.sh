@@ -96,6 +96,8 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "${SCRIPT_DIR}/lib.sh"
+# shellcheck source=scripts/lib-observability.sh
+. "${SCRIPT_DIR}/lib-observability.sh"
 
 load_secret_from_file AGENT_GITHUB_TOKEN
 load_secret_from_file HIVEMOOT_AGENT_TOKEN
@@ -103,6 +105,8 @@ load_provider_secrets
 
 # shellcheck source=scripts/opencode-helpers.sh
 . "${SCRIPT_DIR}/opencode-helpers.sh"
+# shellcheck source=scripts/token-extractor.sh
+. "${SCRIPT_DIR}/token-extractor.sh"
 
 is_valid_uuid() {
   local value="$1"
@@ -256,11 +260,14 @@ should_resume_session() {
 
 provider="${AGENT_PROVIDER:-claude}"
 auth_mode="${AGENT_AUTH_MODE:-auto}"
+# Default to "manual" for standalone invocations; controller injects the real value.
+RUN_TRIGGER_TYPE="${RUN_TRIGGER_TYPE:-manual}"
 hivemoot_buzz_role="${HIVEMOOT_BUZZ_ROLE:-}"
 target_repo="${TARGET_REPO:-}"
 workspace_root="${WORKSPACE_ROOT:-/workspace}"
 clone_depth="${GIT_CLONE_DEPTH:-50}"
 prompt_file="${AGENT_PROMPT_FILE:-/opt/hivemoot-agent/prompts/system/autonomous.md}"
+agent_skills="${AGENT_SKILLS:-}"
 extra_prompt="${AGENT_EXTRA_PROMPT:-}"
 agent_model="${AGENT_MODEL:-}"
 agent_tool_options_json="${AGENT_TOOL_OPTIONS_JSON:-"{}"}"
@@ -483,6 +490,21 @@ else
 Target repository: ${target_repo}
 Local repository path: ${repo_dir}
 "
+fi
+
+# Skill modules: capability blocks appended after the role context.
+if [ -n "$agent_skills" ]; then
+  skills_content=""
+  if ! skills_content="$(load_skill_prompts "$agent_skills" "/opt/hivemoot-agent/skills")"; then
+    exit 1
+  fi
+  if [ -n "$skills_content" ]; then
+    system_prompt="${system_prompt}
+
+<skills>
+${skills_content}
+</skills>"
+  fi
 fi
 
 # Technical notes block: runtime details agents should be aware of.
@@ -833,6 +855,35 @@ You are resuming a prior session for this mention thread. Some data in your cont
     fi
     log "Claude auth mode resolved to: ${claude_auth_mode}"
 
+    # Deny rules are enforced even with --dangerously-skip-permissions;
+    # they block naive single-command exfiltration patterns from prompt injection.
+    # See issue #94 for analysis and rationale.
+    # Note: Bash(*) access means sufficiently creative shell invocations
+    # (e.g. bash -c 'env', python3 -c 'import os; print(os.environ)') cannot
+    # be blocked by deny lists alone — container isolation is the primary defense.
+    claude_disallowed_tools=(
+      "Bash(env)"
+      "Bash(env *)"
+      "Bash(printenv)"
+      "Bash(printenv *)"
+      "Bash(set)"
+      "Bash(set *)"
+      "Bash(export)"
+      "Bash(export *)"
+      "Bash(declare)"
+      "Bash(declare *)"
+      "Bash(cat /run/secrets/*)"
+      "Bash(* /run/secrets/*)"
+      "Read(/run/secrets/*)"
+      # /proc/*/environ contains the full process environment as null-separated
+      # KEY=VALUE pairs — reading it bypasses all shell-builtin deny rules above.
+      # Glob covers /proc/self/environ, /proc/1/environ, and arbitrary PID paths.
+      # Linux-specific; consistent with the /run/secrets/* entries above.
+      "Bash(cat /proc/*/environ)"
+      "Bash(* /proc/*/environ)"
+      "Read(/proc/*/environ)"
+    )
+
     # In task mode, use text output format so the log IS the answer text.
     # Remove --verbose to keep stdout clean (verbose lines would pollute the
     # extracted result). Keep stream-json + verbose for non-task runs where
@@ -842,6 +893,7 @@ You are resuming a prior session for this mention thread. Some data in your cont
     else
       claude_fresh_cmd=(claude -p --verbose --output-format stream-json --dangerously-skip-permissions)
     fi
+    claude_fresh_cmd+=(--disallowedTools "${claude_disallowed_tools[@]}")
     claude_fresh_cmd+=(--append-system-prompt "$system_prompt")
     if [ -n "$agent_model" ]; then
       claude_fresh_cmd+=(--model "$agent_model")
@@ -895,6 +947,7 @@ You are resuming a prior session for this mention thread. Some data in your cont
       else
         cmd=(claude --resume "$claude_active_session_id" -p --verbose --output-format stream-json --dangerously-skip-permissions)
       fi
+      cmd+=(--disallowedTools "${claude_disallowed_tools[@]}")
       cmd+=(--append-system-prompt "$system_prompt")
       if [ -n "$agent_model" ]; then
         cmd+=(--model "$agent_model")
@@ -1152,6 +1205,11 @@ if [ -n "${HEALTH_REPORT_URL:-}" ]; then
 
   # Compute next_run_at when running on a periodic schedule.
   # PERIODIC_INTERVAL_SECS is exported by run-loop.sh; unset for standalone/mention runs.
+  # This is a nominal floor (now + interval), not a hard guarantee. On failure,
+  # run-loop.sh applies exponential backoff that can defer the actual next run
+  # beyond this timestamp. Dashboards should treat this as best-effort and avoid
+  # tight "overdue" thresholds — a run landing later than next_run_at is not
+  # necessarily late, especially when PERIODIC_INTERVAL_SECS < backoff minimums.
   _next_run_at=""
   if [ -n "${PERIODIC_INTERVAL_SECS:-}" ] && printf '%s' "$PERIODIC_INTERVAL_SECS" | grep -Eq '^[1-9][0-9]*$'; then
     _next_run_at="$(date -u -d "+${PERIODIC_INTERVAL_SECS} seconds" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
@@ -1159,10 +1217,21 @@ if [ -n "${HEALTH_REPORT_URL:-}" ]; then
       || true)"
   fi
 
+  # Extract token usage from the per-attempt log (best-effort; empty string if unavailable).
+  _token_usage_json=""
+  if [ -n "${last_command_log:-}" ] && [ -f "${last_command_log}" ]; then
+    case "$provider" in
+      claude) _token_usage_json="$(extract_claude_token_usage_from_log "$last_command_log")" || true ;;
+      codex)  _token_usage_json="$(extract_codex_token_usage_from_log "$last_command_log")" || true ;;
+      *)      _token_usage_json="" ;;
+    esac
+  fi
+
   report_health_to_backend \
     "$agent_name" "$target_repo" "${HIVEMOOT_AGENT_TOKEN:-}" \
     "$run_id" "$_run_outcome" "$run_duration_secs" "${_consecutive_failures:-0}" \
-    "$exit_code" "${_run_error:-}" "$_next_run_at" || true
+    "$exit_code" "${_run_error:-}" "$_next_run_at" \
+    "${RUN_TRIGGER_TYPE:-manual}" "$_token_usage_json" || true
 fi
 
 if [ -n "${last_command_log:-}" ] && [ "$last_command_log" != "$log_file" ] && [ -f "$last_command_log" ]; then
