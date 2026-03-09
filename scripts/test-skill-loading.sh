@@ -450,6 +450,37 @@ test_shipped_skills_load() {
   echo "  ✓ All shipped skills load correctly (${expected_skills// /, })"
 }
 
+test_generate_claude_plugin_dir_invalid_name() {
+  echo "Testing generate_claude_plugin_dir invalid skill name rejection..."
+
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+  trap 'if [ -n "${tmp_dir:-}" ]; then rm -rf "$tmp_dir"; fi' EXIT
+
+  setup_test_skills "$tmp_dir"
+  source_lib
+
+  # Path-traversal attempt must be rejected
+  if generate_claude_plugin_dir "skill/../escape" "$tmp_dir" 2>/dev/null; then
+    fail "generate_claude_plugin_dir should reject path-traversal skill name"
+  fi
+  echo "  ✓ generate_claude_plugin_dir rejects path-traversal skill name"
+
+  # Space in skill name must be rejected
+  if generate_claude_plugin_dir "skill one" "$tmp_dir" 2>/dev/null; then
+    fail "generate_claude_plugin_dir should reject skill name with space"
+  fi
+  echo "  ✓ generate_claude_plugin_dir rejects skill name with space"
+
+  # Slash in skill name must be rejected (absolute path injection)
+  if generate_claude_plugin_dir "/etc/passwd" "$tmp_dir" 2>/dev/null; then
+    fail "generate_claude_plugin_dir should reject slash in skill name"
+  fi
+  echo "  ✓ generate_claude_plugin_dir rejects slash in skill name"
+
+  echo "  ✓ Invalid skill names are rejected by generate_claude_plugin_dir"
+}
+
 echo "Running skill loading tests..."
 echo
 
@@ -464,6 +495,7 @@ test_empty_skill_list
 test_slot_specific_skill_loading
 test_preflight_check_agent_skill_lists
 test_shipped_skills_load
+test_generate_claude_plugin_dir_invalid_name
 
 echo
 echo "All skill loading tests passed!"
