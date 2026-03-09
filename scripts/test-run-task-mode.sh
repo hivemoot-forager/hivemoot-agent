@@ -81,6 +81,9 @@ if [ -n "${CODEX_ANSWER_FILE:-}" ] && [ -n "${MOCK_CODEX_ANSWER_CONTENT:-}" ]; t
   mkdir -p "$(dirname "$CODEX_ANSWER_FILE")"
   printf '%s' "$MOCK_CODEX_ANSWER_CONTENT" > "$CODEX_ANSWER_FILE"
 fi
+if [ -n "${MOCK_RUN_ONCE_STDERR:-}" ]; then
+  printf '%s\n' "$MOCK_RUN_ONCE_STDERR" >&2
+fi
 if [ "${MOCK_RUN_ONCE_SLEEP_SECS:-0}" -gt 0 ]; then
   sleep "${MOCK_RUN_ONCE_SLEEP_SECS}"
 fi
@@ -1214,6 +1217,171 @@ Some text response."
   unset MOCK_RUN_ONCE_LOG_TEXT
 }
 
+run_case_failure_reason_token_missing() {
+  local case_dir="${tmp_root}/case-failure-token-missing"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  export MOCK_RUN_ONCE_EXIT_CODE=1
+  export MOCK_RUN_ONCE_STDERR="Missing GitHub token. Set AGENT_GITHUB_TOKEN_FILE or AGENT_GITHUB_TOKEN (or GITHUB_TOKEN/GH_TOKEN)."
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  if env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-fail-token" \
+    AGENT_TASK_ID="task-fail-token" \
+    AGENT_TASK_PROMPT="Check token missing" \
+    TARGET_REPO="owner/repo" \
+    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
+  then
+    fail "run-task should fail when run-once exits non-zero"
+  fi
+
+  assert_file_contains "$MOCK_CURL_CALLS" '"action": "fail"'
+  assert_file_contains "$MOCK_CURL_CALLS" "GitHub token is missing"
+  assert_file_not_contains "$MOCK_CURL_CALLS" "AGENT_GITHUB_TOKEN_FILE"
+  unset MOCK_RUN_ONCE_EXIT_CODE
+  unset MOCK_RUN_ONCE_STDERR
+}
+
+run_case_failure_reason_repo_access_denied() {
+  local case_dir="${tmp_root}/case-failure-repo-access"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  export MOCK_RUN_ONCE_EXIT_CODE=1
+  export MOCK_RUN_ONCE_STDERR="GitHub token cannot access target repository: owner/repo. Check token scope/installation access."
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  if env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-fail-repo" \
+    AGENT_TASK_ID="task-fail-repo" \
+    AGENT_TASK_PROMPT="Check repo access denial" \
+    TARGET_REPO="owner/repo" \
+    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
+  then
+    fail "run-task should fail when run-once exits non-zero"
+  fi
+
+  assert_file_contains "$MOCK_CURL_CALLS" '"action": "fail"'
+  assert_file_contains "$MOCK_CURL_CALLS" "cannot access target repository"
+  assert_file_not_contains "$MOCK_CURL_CALLS" "Check token scope"
+  unset MOCK_RUN_ONCE_EXIT_CODE
+  unset MOCK_RUN_ONCE_STDERR
+}
+
+run_case_failure_reason_clone_failed() {
+  local case_dir="${tmp_root}/case-failure-clone"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  export MOCK_RUN_ONCE_EXIT_CODE=1
+  export MOCK_RUN_ONCE_STDERR="Failed to clone owner/repo. Check token and repo access."
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  if env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-fail-clone" \
+    AGENT_TASK_ID="task-fail-clone" \
+    AGENT_TASK_PROMPT="Check clone failure" \
+    TARGET_REPO="owner/repo" \
+    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
+  then
+    fail "run-task should fail when run-once exits non-zero"
+  fi
+
+  assert_file_contains "$MOCK_CURL_CALLS" '"action": "fail"'
+  assert_file_contains "$MOCK_CURL_CALLS" "Failed to clone repository"
+  assert_file_not_contains "$MOCK_CURL_CALLS" "Check token and repo access"
+  unset MOCK_RUN_ONCE_EXIT_CODE
+  unset MOCK_RUN_ONCE_STDERR
+}
+
+run_case_failure_reason_provider_auth() {
+  local case_dir="${tmp_root}/case-failure-provider-auth"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  export MOCK_RUN_ONCE_EXIT_CODE=1
+  export MOCK_RUN_ONCE_STDERR="ANTHROPIC_API_KEY is required when AGENT_PROVIDER=claude and AGENT_AUTH_MODE=api_key."
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  if env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-fail-auth" \
+    AGENT_TASK_ID="task-fail-auth" \
+    AGENT_TASK_PROMPT="Check provider auth failure" \
+    TARGET_REPO="owner/repo" \
+    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
+  then
+    fail "run-task should fail when run-once exits non-zero"
+  fi
+
+  assert_file_contains "$MOCK_CURL_CALLS" '"action": "fail"'
+  assert_file_contains "$MOCK_CURL_CALLS" "ANTHROPIC_API_KEY"
+  assert_file_not_contains "$MOCK_CURL_CALLS" "AGENT_AUTH_MODE"
+  unset MOCK_RUN_ONCE_EXIT_CODE
+  unset MOCK_RUN_ONCE_STDERR
+}
+
+run_case_failure_reason_unknown_falls_back_to_exit_code() {
+  local case_dir="${tmp_root}/case-failure-unknown"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  export MOCK_RUN_ONCE_EXIT_CODE=42
+  export MOCK_RUN_ONCE_STDERR="Some unexpected internal error occurred"
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  if env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-fail-unknown" \
+    AGENT_TASK_ID="task-fail-unknown" \
+    AGENT_TASK_PROMPT="Check unknown failure fallback" \
+    TARGET_REPO="owner/repo" \
+    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
+  then
+    fail "run-task should fail when run-once exits non-zero"
+  fi
+
+  assert_file_contains "$MOCK_CURL_CALLS" '"action": "fail"'
+  assert_file_contains "$MOCK_CURL_CALLS" "exit code 42"
+  assert_file_not_contains "$MOCK_CURL_CALLS" "unexpected internal error"
+  unset MOCK_RUN_ONCE_EXIT_CODE
+  unset MOCK_RUN_ONCE_STDERR
+}
+
 run_case_direct_env
 run_case_preserves_explicit_prompt_override
 run_case_direct_env_messages_file
@@ -1246,5 +1414,10 @@ run_case_codex_auth_error_with_nested_code
 run_case_codex_auth_error_suppressed_when_result_exists
 run_case_codex_auth_error_message_only
 run_case_codex_auth_error_turn_failed
+run_case_failure_reason_token_missing
+run_case_failure_reason_repo_access_denied
+run_case_failure_reason_clone_failed
+run_case_failure_reason_provider_auth
+run_case_failure_reason_unknown_falls_back_to_exit_code
 
 echo "PASS: task mode checks"

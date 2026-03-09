@@ -171,6 +171,36 @@ build_execute_url() {
   return 1
 }
 
+# Scan captured stderr from run-once.sh for known static error patterns.
+# Returns a safe, actionable one-liner — never raw stderr content.
+# Prints nothing when no known pattern matches (caller falls back to generic message).
+classify_run_failure() {
+  local stderr_file="${1:-}"
+  if [ -z "$stderr_file" ] || [ ! -s "$stderr_file" ]; then
+    return 0
+  fi
+  if grep -qF "Missing GitHub token" "$stderr_file"; then
+    printf '%s' "GitHub token is missing"
+  elif grep -qF "Failed to validate GitHub token" "$stderr_file"; then
+    printf '%s' "GitHub token validation failed — check token scope or installation access"
+  elif grep -qF "GitHub token cannot access target repository" "$stderr_file"; then
+    printf '%s' "GitHub token cannot access target repository — check token scope or installation access"
+  elif grep -qF "Failed to clone" "$stderr_file"; then
+    printf '%s' "Failed to clone repository — check token and repo access"
+  elif grep -qF "ANTHROPIC_API_KEY is required" "$stderr_file"; then
+    printf '%s' "Claude provider API key (ANTHROPIC_API_KEY) is missing"
+  elif grep -qF "OPENAI_API_KEY is required" "$stderr_file"; then
+    printf '%s' "Codex provider API key (OPENAI_API_KEY) is missing"
+  elif grep -qF "GOOGLE_API_KEY" "$stderr_file" && grep -qF "required" "$stderr_file"; then
+    printf '%s' "Gemini provider API key (GOOGLE_API_KEY) is missing"
+  elif grep -qF "subscription credentials not found" "$stderr_file" \
+      || grep -qF "subscription login not found" "$stderr_file"; then
+    printf '%s' "Provider subscription credentials not found — run the matching auth command"
+  elif grep -qF "Failed to configure git credential helper" "$stderr_file"; then
+    printf '%s' "Failed to configure git credentials"
+  fi
+}
+
 post_task_update() {
   local action="$1"
   local message="${2:-}"
@@ -264,11 +294,16 @@ start_task_heartbeat_loop() {
   heartbeat_pid="$!"
 }
 
+run_stderr_file=""
 trap '
   stop_task_heartbeat_loop
   if [ -n "$task_messages_tmp_file" ]; then
     rm -f "$task_messages_tmp_file"
     task_messages_tmp_file=""
+  fi
+  if [ -n "$run_stderr_file" ]; then
+    rm -f "$run_stderr_file"
+    run_stderr_file=""
   fi
 ' EXIT
 
@@ -389,13 +424,18 @@ if [ -d "$log_dir" ]; then
 fi
 
 run_exit_code=0
+run_stderr_file="$(mktemp)"
 start_task_heartbeat_loop
-if "$run_once_script"; then
+if "$run_once_script" 2>"$run_stderr_file"; then
   run_exit_code=0
 else
   run_exit_code=$?
 fi
 stop_task_heartbeat_loop
+# Re-emit captured stderr so it still appears in container/terminal logs.
+if [ -s "$run_stderr_file" ]; then
+  cat "$run_stderr_file" >&2
+fi
 
 latest_log=""
 if [ -d "$log_dir" ]; then
@@ -610,7 +650,13 @@ elif [ "$run_exit_code" -eq 124 ]; then
 elif [ -n "$auth_error_code" ]; then
   post_task_update fail "Provider authentication failed: ${auth_error_code}" || true
 else
-  post_task_update fail "Task execution failed with exit code ${run_exit_code}" || true
+  failure_reason="$(classify_run_failure "$run_stderr_file")"
+  if [ -n "$failure_reason" ]; then
+    fail_message="${failure_reason} (exit code ${run_exit_code})"
+  else
+    fail_message="Task execution failed with exit code ${run_exit_code}"
+  fi
+  post_task_update fail "$fail_message" || true
 fi
 
 log "Task run finished: task_id=${task_id} exit_code=${run_exit_code} result_path=${result_path}"
