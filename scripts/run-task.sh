@@ -191,8 +191,8 @@ classify_run_failure() {
     printf '%s' "Claude provider API key (ANTHROPIC_API_KEY) is missing"
   elif grep -qF "OPENAI_API_KEY is required" "$stderr_file"; then
     printf '%s' "Codex provider API key (OPENAI_API_KEY) is missing"
-  elif grep -qF "GOOGLE_API_KEY" "$stderr_file" && grep -qF "required" "$stderr_file"; then
-    printf '%s' "Gemini provider API key (GOOGLE_API_KEY) is missing"
+  elif grep -qF "GOOGLE_API_KEY (or GEMINI_API_KEY) is required" "$stderr_file"; then
+    printf '%s' "Gemini provider API key (GOOGLE_API_KEY or GEMINI_API_KEY) is missing"
   elif grep -qF "subscription credentials not found" "$stderr_file" \
       || grep -qF "subscription login not found" "$stderr_file"; then
     printf '%s' "Provider subscription credentials not found — run the matching auth command"
