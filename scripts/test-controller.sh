@@ -1079,8 +1079,10 @@ run_mentions_retry_after_failure_case() {
     PERIODIC_JITTER_SECS="0" \
     bash "${repo_root}/scripts/controller.sh" >"$run2_log" 2>&1
 
-  assert_file_contains "$run2_log" "worker: queued mention trigger for #88"
-  assert_file_not_contains "$run2_log" "duplicate mention suppressed (ack_key=${expected_ack_key})"
+  # After the fix: a .failed artifact suppresses re-queue for the same ack_key.
+  # The mention must not be re-dispatched; the second run should log suppression.
+  assert_file_not_contains "$run2_log" "worker: queued mention trigger for #88"
+  assert_file_contains "$run2_log" "duplicate mention suppressed (ack_key=${expected_ack_key})"
 
   shopt -s nullglob
   summary_files=("${case_dir}/workspace"/workspaces/*/.hivemoot/summary)
@@ -1098,16 +1100,19 @@ run_mentions_retry_after_failure_case() {
     fi
   done
 
-  assert_eq "1" "$mention_failed_count" "expected one failed mention run before retry"
-  assert_eq "1" "$mention_completed_count" "expected one completed mention retry run"
+  assert_eq "1" "$mention_failed_count" "expected one failed mention run (run 1)"
+  assert_eq "0" "$mention_completed_count" "expected no completed runs: run 2 was suppressed"
 
+  # No ack should be issued: the failed job was never re-queued, so ack_mention
+  # was never called. .failed artifacts age out via periodic pruning (same TTL
+  # as .done), after which the mention becomes re-queueable.
   ack_log="${case_dir}/hivemoot-state/ack.log"
-  [ -f "$ack_log" ] || fail "missing ack log in mention retry case"
-  ack_count="$(wc -l < "$ack_log" | tr -d '[:space:]')"
-  assert_eq "1" "$ack_count" "expected exactly one ack after retry success"
-  assert_file_contains "$ack_log" "${expected_ack_key}|${expected_state_file}"
+  if [ -f "$ack_log" ]; then
+    ack_count="$(wc -l < "$ack_log" | tr -d '[:space:]')"
+    assert_eq "0" "$ack_count" "expected no acks: re-queue was suppressed by .failed dedup"
+  fi
 
-  echo "PASS: failed mention jobs are retried on re-emitted events"
+  echo "PASS: failed mention jobs are suppressed until .failed artifact ages out"
 }
 
 run_task_watch_case() {

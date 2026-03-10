@@ -531,7 +531,7 @@ queue_has_ack_key() {
   ack_key_marker="\"ack_key\": \"${ack_key}\""
 
   shopt -s nullglob
-  existing_files=("${queue_root}"/*.trigger.json "${queue_root}"/*.processing "${queue_root}"/*.done)
+  existing_files=("${queue_root}"/*.trigger.json "${queue_root}"/*.processing "${queue_root}"/*.done "${queue_root}"/*.failed)
   shopt -u nullglob
 
   for existing_file in "${existing_files[@]}"; do
