@@ -187,6 +187,16 @@ classify_run_failure() {
     printf '%s' "GitHub token cannot access target repository — check token scope or installation access"
   elif grep -qF "Failed to clone" "$stderr_file"; then
     printf '%s' "Failed to clone repository — check token and repo access"
+  elif grep -qF "KILO_PROVIDER is required" "$stderr_file"; then
+    printf '%s' "Kilo provider is not configured — set KILO_PROVIDER or KILOCODE_TOKEN"
+  elif grep -qF "OPENROUTER_API_KEY is required" "$stderr_file"; then
+    printf '%s' "Kilo provider API key (OPENROUTER_API_KEY) is missing"
+  elif grep -qF "when KILO_PROVIDER=anthropic" "$stderr_file"; then
+    printf '%s' "Kilo provider API key (ANTHROPIC_API_KEY) is missing"
+  elif grep -qF "when KILO_PROVIDER=openai" "$stderr_file"; then
+    printf '%s' "Kilo provider API key (OPENAI_API_KEY) is missing"
+  elif grep -qF "when KILO_PROVIDER=google" "$stderr_file"; then
+    printf '%s' "Kilo provider API key (GOOGLE_API_KEY or GEMINI_API_KEY) is missing"
   elif grep -qF "ANTHROPIC_API_KEY is required" "$stderr_file"; then
     printf '%s' "Claude provider API key (ANTHROPIC_API_KEY) is missing"
   elif grep -qF "OPENAI_API_KEY is required" "$stderr_file"; then

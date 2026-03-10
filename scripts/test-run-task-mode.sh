@@ -1349,6 +1349,72 @@ run_case_failure_reason_provider_auth() {
   unset MOCK_RUN_ONCE_STDERR
 }
 
+run_case_failure_reason_kilo_byok_openai() {
+  local case_dir="${tmp_root}/case-failure-kilo-byok-openai"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  export MOCK_RUN_ONCE_EXIT_CODE=1
+  export MOCK_RUN_ONCE_STDERR="OPENAI_API_KEY is required when KILO_PROVIDER=openai."
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  if env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-kilo-openai" \
+    AGENT_TASK_ID="task-kilo-openai" \
+    AGENT_TASK_PROMPT="Check Kilo BYOK openai failure" \
+    TARGET_REPO="owner/repo" \
+    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
+  then
+    fail "run-task should fail when run-once exits non-zero"
+  fi
+
+  assert_file_contains "$MOCK_CURL_CALLS" '"action": "fail"'
+  # Must say Kilo, not Codex
+  assert_file_contains "$MOCK_CURL_CALLS" "Kilo provider API key"
+  assert_file_not_contains "$MOCK_CURL_CALLS" "Codex provider"
+  unset MOCK_RUN_ONCE_EXIT_CODE
+  unset MOCK_RUN_ONCE_STDERR
+}
+
+run_case_failure_reason_kilo_provider_not_configured() {
+  local case_dir="${tmp_root}/case-failure-kilo-unconfigured"
+  mkdir -p "$case_dir/logs" "$case_dir/workspace"
+
+  export MOCK_CURL_CALLS="${case_dir}/curl-calls.log"
+  export MOCK_RUN_ONCE_CALLS="${case_dir}/run-once-calls.log"
+  export MOCK_RUN_ONCE_EXIT_CODE=1
+  export MOCK_RUN_ONCE_STDERR="KILO_PROVIDER is required when AGENT_PROVIDER=kilo (unless KILOCODE_TOKEN is set for gateway mode)."
+  : > "$MOCK_CURL_CALLS"
+  : > "$MOCK_RUN_ONCE_CALLS"
+
+  if env \
+    RUN_ONCE_SCRIPT="$mock_run_once" \
+    WORKSPACE_ROOT="${case_dir}/workspace" \
+    LOG_DIR="${case_dir}/logs" \
+    HIVEMOOT_AGENT_TOKEN="task-token" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    AGENT_TASK_CLAIM_TOKEN="claim-token-kilo-unconfigured" \
+    AGENT_TASK_ID="task-kilo-unconfigured" \
+    AGENT_TASK_PROMPT="Check Kilo unconfigured failure" \
+    TARGET_REPO="owner/repo" \
+    bash scripts/run-task.sh >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
+  then
+    fail "run-task should fail when run-once exits non-zero"
+  fi
+
+  assert_file_contains "$MOCK_CURL_CALLS" '"action": "fail"'
+  assert_file_contains "$MOCK_CURL_CALLS" "Kilo provider is not configured"
+  unset MOCK_RUN_ONCE_EXIT_CODE
+  unset MOCK_RUN_ONCE_STDERR
+}
+
 run_case_failure_reason_unknown_falls_back_to_exit_code() {
   local case_dir="${tmp_root}/case-failure-unknown"
   mkdir -p "$case_dir/logs" "$case_dir/workspace"
@@ -1418,6 +1484,8 @@ run_case_failure_reason_token_missing
 run_case_failure_reason_repo_access_denied
 run_case_failure_reason_clone_failed
 run_case_failure_reason_provider_auth
+run_case_failure_reason_kilo_byok_openai
+run_case_failure_reason_kilo_provider_not_configured
 run_case_failure_reason_unknown_falls_back_to_exit_code
 
 echo "PASS: task mode checks"
