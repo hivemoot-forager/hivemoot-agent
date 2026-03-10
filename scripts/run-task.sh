@@ -476,13 +476,15 @@ extract_task_result_markdown() {
   esac
 }
 
-# Scans a Codex JSONL log for known auth error codes and prints the first
-# matching code to stdout. Returns 0 if an auth error is found, 1 otherwise.
+# Scans a Codex JSONL log for auth errors and prints a code or description to
+# stdout. Returns 0 if an auth error is found, 1 otherwise.
 #
-# Codex exits 0 even when the API rejects the request with an auth error
-# (e.g., invalid key, refresh token reuse). Those failures appear as
-# {"type":"error","code":"..."} or {"type":"error","error":{"code":"..."}}
-# events in the JSONL stream while producing no item.completed output.
+# Codex exits 0 even when the API rejects the request with an auth error.
+# Auth failures appear in two shapes depending on Codex version:
+#   - {"type":"error","code":"...","message":"..."} (explicit code field)
+#   - {"type":"error","error":{"code":"...","message":"..."}} (nested code)
+#   - {"type":"error","message":"Unauthorized"} (message only, no code)
+#   - {"type":"turn.failed","error":{"message":"Unauthorized"}} (turn event)
 # Without this check, such runs would be reported as action=complete.
 detect_codex_auth_error() {
   local log_path="$1"
@@ -492,13 +494,21 @@ detect_codex_auth_error() {
 
   error_code="$(jq -Rr '
     fromjson?
-    | select(.type == "error")
-    | (.error.code // .code // empty)
+    | select(.type == "error" or .type == "turn.failed")
+    | (
+        (.error.code // .code) as $code |
+        ((.message // .error.message // "") |
+          if test("Unauthorized|Invalid API key|Incorrect API key"; "i")
+          then "auth_error"
+          else null end) as $msg_code |
+        ($code // $msg_code)
+      )
     | select(. != null)
     | select(
         . == "refresh_token_reused" or
         . == "invalid_api_key" or
         . == "token_expired" or
+        . == "auth_error" or
         startswith("auth_")
       )
   ' "$log_path" | head -1)"
