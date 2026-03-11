@@ -556,6 +556,31 @@ test_generate_claude_plugin_dir_cp_failure() {
   echo "  ✓ generate_claude_plugin_dir fails closed and cleans up on cp failure"
 }
 
+test_generate_claude_plugin_dir_invalid_name() {
+  echo "Testing generate_claude_plugin_dir rejects invalid skill names..."
+  source_lib
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+  trap 'if [ -n "${tmp_dir:-}" ]; then rm -rf "$tmp_dir"; fi' EXIT
+
+  # Each name exercises a distinct rejection path in the *[!a-zA-Z0-9_-]* case:
+  #   skill/../escape  — slash (path traversal)
+  #   bad skill        — space
+  #   .hidden          — leading dot (dot is outside [a-zA-Z0-9_-])
+  #   skill:name       — colon (common in injected strings)
+  #
+  # Note: null bytes are stripped by bash at variable assignment boundaries,
+  # so a null-byte bypass is not reachable via this calling convention.
+  local bad_name
+  for bad_name in "skill/../escape" "bad skill" ".hidden" "skill:name"; do
+    if generate_claude_plugin_dir "$bad_name" "$tmp_dir" 2>/dev/null; then
+      fail "generate_claude_plugin_dir should reject name: ${bad_name}"
+    fi
+  done
+
+  echo "  ✓ generate_claude_plugin_dir rejects invalid skill names"
+}
+
 echo "Running skill loading tests..."
 echo
 
@@ -573,6 +598,7 @@ test_shipped_skills_load
 test_generate_claude_plugin_dir_basic
 test_generate_claude_plugin_dir_all_mode
 test_generate_claude_plugin_dir_cp_failure
+test_generate_claude_plugin_dir_invalid_name
 
 echo
 echo "All skill loading tests passed!"
