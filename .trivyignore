@@ -10,6 +10,12 @@ CVE-2026-27904
 # exp:2026-05-30
 CVE-2026-29786
 
+# tar Symlink Path Traversal via Drive-Relative Linkpath — transitive dep bundled in npm / provider CLIs (tar < 7.5.11).
+# Drive-relative linkpath attack is Windows-specific; not exploitable in Linux containers.
+# Remove once npm and upstream providers ship with tar >= 7.5.11.
+# exp:2026-07-31
+CVE-2026-31802
+
 # docker/cli Uncontrolled Search Path in plugin loading — embedded in the gh CLI Go binary.
 # Requires a malicious plugin in PATH; not applicable in our container runtime context.
 # Remove once gh ships a release embedding docker/cli >= 29.2.0.
