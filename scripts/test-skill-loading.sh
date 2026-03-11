@@ -478,6 +478,12 @@ test_generate_claude_plugin_dir_invalid_name() {
   fi
   echo "  ✓ generate_claude_plugin_dir rejects slash in skill name"
 
+  # Leading-dot name — dot is outside [a-zA-Z0-9_-]
+  if generate_claude_plugin_dir ".hidden" "$tmp_dir" 2>/dev/null; then
+    fail "generate_claude_plugin_dir should reject leading-dot skill name"
+  fi
+  echo "  ✓ generate_claude_plugin_dir rejects leading-dot skill name"
+
   echo "  ✓ Invalid skill names are rejected by generate_claude_plugin_dir"
 }
 
