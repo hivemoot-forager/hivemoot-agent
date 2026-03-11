@@ -10,8 +10,22 @@ CVE-2026-27904
 # exp:2026-05-30
 CVE-2026-29786
 
+# tar Symlink Path Traversal — successive drive-relative linkpath CVE (tar < 7.5.11).
+# Same attack class as CVE-2026-29786: Windows-specific, not exploitable in Linux containers.
+# Remove once upstream provider CLI releases a version pinning tar >= 7.5.11.
+# Track in #378.
+# exp:2026-08-30
+CVE-2026-31802
+
 # docker/cli Uncontrolled Search Path in plugin loading — embedded in the gh CLI Go binary.
 # Requires a malicious plugin in PATH; not applicable in our container runtime context.
 # Remove once gh ships a release embedding docker/cli >= 29.2.0.
 # exp:2026-05-30
 CVE-2025-15558
+
+# Go stdlib url.Parse and HTML content-attribute issues — embedded in the gh CLI Go binary.
+# Cannot be patched directly; requires gh to ship a release built with Go >= 1.25.8.
+# Track in #378.
+# exp:2026-08-30
+CVE-2026-25679
+CVE-2026-27142
