@@ -1258,11 +1258,19 @@ if [ -n "${HEALTH_REPORT_URL:-}" ]; then
     esac
   fi
 
+  # Extract run summary from the per-attempt log (best-effort; empty string if unavailable).
+  # Claude: extracted from the final "type":"result" event in the stream-json log.
+  # Other providers: not yet supported; omitted from the payload.
+  _run_summary=""
+  if [ -n "${last_command_log:-}" ] && [ -f "${last_command_log}" ]; then
+    _run_summary="$(extract_run_summary_from_log "$provider" "$last_command_log")" || true
+  fi
+
   report_health_to_backend \
     "$agent_name" "$target_repo" "${HIVEMOOT_AGENT_TOKEN:-}" \
     "$run_id" "$_run_outcome" "$run_duration_secs" "${_consecutive_failures:-0}" \
     "$exit_code" "${_run_error:-}" "$_next_run_at" \
-    "${RUN_TRIGGER_TYPE:-manual}" "$_token_usage_json" || true
+    "${RUN_TRIGGER_TYPE:-manual}" "$_token_usage_json" "$_run_summary" || true
 fi
 
 if [ -n "${last_command_log:-}" ] && [ "$last_command_log" != "$log_file" ] && [ -f "$last_command_log" ]; then

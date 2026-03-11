@@ -208,6 +208,69 @@ test_codex_missing_file_returns_empty() {
   pass "codex: returns empty for missing log file"
 }
 
+# ── run summary extraction tests ─────────────────────────────────
+
+test_run_summary_claude_extracts_result_field() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"assistant","message":{"content":[{"type":"text","text":"I reviewed PR #5."}]}}
+{"type":"result","subtype":"success","result":"Reviewed PR #5 and left two comments on the auth timeout handling.\n\n- Suggested using exponential backoff in `client.ts`\n- Flagged missing test for the error path","num_turns":2,"duration_ms":3000,"total_cost_usd":0.01,"modelUsage":{}}
+EOF
+  local result
+  result="$(extract_run_summary_from_log "claude" "${TEST_TMP}/run.ndjson")"
+  [ -n "$result" ] || fail "expected non-empty run summary"
+  printf '%s' "$result" | grep -q "Reviewed PR #5" || fail "expected summary to contain 'Reviewed PR #5', got: ${result}"
+  pass "claude: extracts .result from last type=result event"
+}
+
+test_run_summary_claude_caps_at_max_bytes() {
+  source_extractor
+  # Build a result longer than 1500 bytes
+  local long_text
+  long_text="$(head -c 3000 /dev/urandom | base64 | tr -d '\n' | head -c 3000)"
+  printf '{"type":"result","subtype":"success","result":"%s","num_turns":1,"duration_ms":1000,"total_cost_usd":0.01,"modelUsage":{}}\n' "$long_text" > "${TEST_TMP}/run.ndjson"
+  local result
+  result="$(extract_run_summary_from_log "claude" "${TEST_TMP}/run.ndjson")"
+  local byte_count
+  byte_count="$(printf '%s' "$result" | wc -c | tr -d ' ')"
+  [ "$byte_count" -le 1500 ] || fail "expected at most 1500 bytes, got ${byte_count}"
+  [ "$byte_count" -gt 0 ] || fail "expected non-empty summary"
+  pass "claude: caps run_summary at RUN_SUMMARY_MAX_BYTES"
+}
+
+test_run_summary_claude_no_result_event_returns_empty() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"assistant","message":{"content":[{"type":"text","text":"Working on it."}]}}
+{"type":"tool_use","name":"bash","input":{"command":"ls"}}
+EOF
+  local result
+  result="$(extract_run_summary_from_log "claude" "${TEST_TMP}/run.ndjson")"
+  [ -z "$result" ] || fail "expected empty when no type=result event, got: ${result}"
+  pass "claude: returns empty when no result event in log"
+}
+
+test_run_summary_unsupported_provider_returns_empty() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}
+EOF
+  local result
+  result="$(extract_run_summary_from_log "codex" "${TEST_TMP}/run.ndjson")"
+  [ -z "$result" ] || fail "expected empty for unsupported provider, got: ${result}"
+  result="$(extract_run_summary_from_log "gemini" "${TEST_TMP}/run.ndjson")"
+  [ -z "$result" ] || fail "expected empty for gemini provider, got: ${result}"
+  pass "unsupported providers return empty string"
+}
+
+test_run_summary_missing_file_returns_empty() {
+  source_extractor
+  local result
+  result="$(extract_run_summary_from_log "claude" "${TEST_TMP}/nonexistent.ndjson")"
+  [ -z "$result" ] || fail "expected empty for missing file, got: ${result}"
+  pass "returns empty for missing log file"
+}
+
 # ── run all tests ─────────────────────────────────────────────────
 
 echo "Running token extractor tests"
@@ -227,6 +290,14 @@ run_test test_codex_sums_across_all_turn_completed_events
 run_test test_codex_single_turn_returns_correct_counts
 run_test test_codex_no_turn_completed_returns_empty
 run_test test_codex_missing_file_returns_empty
+echo ""
+
+echo "  Run summary extraction:"
+run_test test_run_summary_claude_extracts_result_field
+run_test test_run_summary_claude_caps_at_max_bytes
+run_test test_run_summary_claude_no_result_event_returns_empty
+run_test test_run_summary_unsupported_provider_returns_empty
+run_test test_run_summary_missing_file_returns_empty
 echo ""
 
 echo "Passed ${TESTS_PASSED}/${TESTS_RUN} tests"

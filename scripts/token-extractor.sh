@@ -80,3 +80,35 @@ extract_codex_token_usage_from_log() {
       end
   ' "$path" 2>/dev/null || true
 }
+
+# Extract a plain-text run summary from a provider's NDJSON stream log.
+# Returns the agent's final text output, capped at RUN_SUMMARY_MAX_BYTES.
+# Best-effort: returns empty string on failure or when unavailable.
+#
+# Args:
+#   provider  — provider name (claude|codex|gemini|kilo|opencode)
+#   path      — path to the NDJSON stream log
+#
+# Support:
+#   claude  — parses last "type":"result" event; .result is the final assistant text
+#   others  — not yet supported; returns empty string
+extract_run_summary_from_log() {
+  local provider="$1"
+  local path="$2"
+  local max_bytes="${RUN_SUMMARY_MAX_BYTES:-1500}"
+  if [ ! -f "$path" ] || ! [ -s "$path" ] || ! command -v jq >/dev/null 2>&1; then
+    return 0
+  fi
+  case "$provider" in
+    claude)
+      jq -Rrs '
+        [split("\n")[] | select(length > 0) | try fromjson catch null | select(. != null)]
+        | map(select(.type == "result")) | last
+        | if . == null then empty else (.result // empty) end
+      ' "$path" 2>/dev/null | head -c "$max_bytes" || true
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}

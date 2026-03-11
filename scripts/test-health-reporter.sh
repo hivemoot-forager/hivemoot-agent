@@ -939,6 +939,42 @@ test_validates_token_usage_null_passes() {
   pass "null token_usage passes validation"
 }
 
+# ── run_summary field tests ───────────────────────────────────────
+
+test_payload_includes_run_summary() {
+  source_reporter
+  local payload
+  payload="$(_build_health_payload "a" "owner/repo" "run-1" "success" "10" "0" "" "" "" "" "" "Opened PR #42 to fix auth timeout.")"
+  local has_rs
+  has_rs="$(printf '%s' "$payload" | jq 'has("run_summary")')"
+  [ "$has_rs" = "true" ] || fail "expected run_summary to be present"
+  local rs_val
+  rs_val="$(printf '%s' "$payload" | jq -r '.run_summary')"
+  [ "$rs_val" = "Opened PR #42 to fix auth timeout." ] || fail "expected run_summary value, got: ${rs_val}"
+  pass "payload includes run_summary when provided"
+}
+
+test_payload_omits_run_summary_when_empty() {
+  source_reporter
+  local payload
+  payload="$(build_test_payload)"
+  local has_rs
+  has_rs="$(printf '%s' "$payload" | jq 'has("run_summary")')"
+  [ "$has_rs" = "false" ] || fail "expected run_summary absent when not provided"
+  pass "payload omits run_summary when empty"
+}
+
+test_validates_run_summary_passes() {
+  source_reporter
+  local payload
+  payload="$(build_test_payload)"
+  payload="$(printf '%s' "$payload" | jq '. + {run_summary: "Reviewed PR #5 and left comments."}')"
+  if ! _validate_health_payload "$payload" 2>/dev/null; then
+    fail "valid run_summary string should pass validation"
+  fi
+  pass "run_summary string passes validation"
+}
+
 # ── send_heartbeat tests ─────────────────────────────────────────
 
 test_heartbeat_skips_when_url_empty() {
@@ -1135,6 +1171,11 @@ run_test test_payload_includes_token_usage
 run_test test_payload_omits_token_usage_when_empty
 echo ""
 
+echo "  Payload builder — run_summary:"
+run_test test_payload_includes_run_summary
+run_test test_payload_omits_run_summary_when_empty
+echo ""
+
 echo "  Validation — required fields:"
 run_test test_validates_missing_agent_id
 run_test test_validates_missing_repo
@@ -1157,6 +1198,10 @@ echo "  Validation — token_usage:"
 run_test test_validates_token_usage_object_passes
 run_test test_validates_token_usage_string_rejected
 run_test test_validates_token_usage_null_passes
+echo ""
+
+echo "  Validation — run_summary:"
+run_test test_validates_run_summary_passes
 echo ""
 
 echo "  Validation — numerics:"
