@@ -21,3 +21,16 @@ CVE-2026-31802
 # Remove once gh ships a release embedding docker/cli >= 29.2.0.
 # exp:2026-05-30
 CVE-2025-15558
+
+# Go stdlib url.Parse host/authority validation — embedded in the gh CLI Go binary (go < 1.25.8).
+# Exploitable only if gh processes attacker-controlled URLs in ways that bypass validation;
+# not applicable in our container runtime context.
+# Remove once gh ships a release built with go >= 1.25.8 / 1.26.1.
+# exp:2026-07-31
+CVE-2026-25679
+
+# Go stdlib HTML meta tag URL injection — embedded in the gh CLI Go binary (go < 1.25.8).
+# Requires rendering HTML with attacker-controlled URLs; not applicable in container runtime.
+# Remove once gh ships a release built with go >= 1.25.8 / 1.26.1.
+# exp:2026-07-31
+CVE-2026-27142
