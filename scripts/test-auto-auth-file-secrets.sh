@@ -43,6 +43,8 @@ echo "Running auto-auth file-secret checks"
 
 # shellcheck source=scripts/lib.sh
 . scripts/lib.sh
+# shellcheck source=scripts/lib-validate.sh
+. scripts/lib-validate.sh
 
 tmp_key_file="$(mktemp)"
 missing_key_file="/tmp/hivemoot-missing-openai-key-$$"

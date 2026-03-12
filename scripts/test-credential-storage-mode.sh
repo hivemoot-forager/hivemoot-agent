@@ -35,6 +35,8 @@ echo "Running credential storage mode checks"
 
 # shellcheck source=scripts/lib.sh
 . scripts/lib.sh
+# shellcheck source=scripts/lib-validate.sh
+. scripts/lib-validate.sh
 # shellcheck source=scripts/opencode-helpers.sh
 . scripts/opencode-helpers.sh
 

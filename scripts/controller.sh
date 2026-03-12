@@ -15,6 +15,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 . "${SCRIPT_DIR}/lib-global-slots.sh"
 # shellcheck source=scripts/lib-slots.sh
 . "${SCRIPT_DIR}/lib-slots.sh"
+# shellcheck source=scripts/lib-validate.sh
+. "${SCRIPT_DIR}/lib-validate.sh"
 # shellcheck source=scripts/health-reporter.sh
 . "${SCRIPT_DIR}/health-reporter.sh"
 

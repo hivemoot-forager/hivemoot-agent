@@ -8,6 +8,8 @@ log() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "${SCRIPT_DIR}/lib.sh"
+# shellcheck source=scripts/lib-validate.sh
+. "${SCRIPT_DIR}/lib-validate.sh"
 
 load_provider_secrets
 load_secret_from_file HIVEMOOT_AGENT_TOKEN

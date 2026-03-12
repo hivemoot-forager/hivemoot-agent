@@ -100,6 +100,8 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "${SCRIPT_DIR}/lib.sh"
+# shellcheck source=scripts/lib-validate.sh
+. "${SCRIPT_DIR}/lib-validate.sh"
 # shellcheck source=scripts/lib-observability.sh
 . "${SCRIPT_DIR}/lib-observability.sh"
 
