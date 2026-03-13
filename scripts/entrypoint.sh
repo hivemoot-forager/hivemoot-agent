@@ -37,7 +37,7 @@ fi
 mode="${RUN_MODE:-once}"
 case "$mode" in
   once)
-    log "Running one-shot execution"
+    log "Running all agents once in parallel"
     exec /opt/hivemoot-agent/scripts/run-multi.sh
     ;;
   loop)
