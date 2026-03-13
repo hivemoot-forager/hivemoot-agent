@@ -27,9 +27,10 @@ _HEALTH_PAYLOAD_MAX_BYTES=10240
 
 # Valid enum values for local validation.
 _VALID_OUTCOMES="success failure timeout"
+_VALID_TRIGGERS="scheduled mention manual task"
 
 # Allowed payload fields (sorted). Must match backend HealthReport.
-_ALLOWED_FIELDS="agent_id consecutive_failures duration_secs error exit_code outcome repo run_id"
+_ALLOWED_FIELDS="agent_id consecutive_failures duration_secs error exit_code next_run_at outcome repo run_id token_usage trigger"
 
 # Build the JSON payload for the health report.
 # Requires jq.
@@ -42,6 +43,9 @@ _build_health_payload() {
   local consecutive_failures="$6"
   local exit_code="${7:-}"
   local error_msg="${8:-}"
+  local next_run_at="${9:-}"
+  local trigger="${10:-}"
+  local token_usage_json="${11:-}"
 
   local jq_args=(
     -n
@@ -71,6 +75,18 @@ _build_health_payload() {
   if [ -n "$error_msg" ]; then
     jq_args+=(--arg error "$error_msg")
     jq_filter="${jq_filter} + {error: \$error}"
+  fi
+  if [ -n "$next_run_at" ]; then
+    jq_args+=(--arg next_run_at "$next_run_at")
+    jq_filter="${jq_filter} + {next_run_at: \$next_run_at}"
+  fi
+  if [ -n "$trigger" ]; then
+    jq_args+=(--arg trigger "$trigger")
+    jq_filter="${jq_filter} + {trigger: \$trigger}"
+  fi
+  if [ -n "$token_usage_json" ]; then
+    jq_args+=(--argjson token_usage "$token_usage_json")
+    jq_filter="${jq_filter} + {token_usage: \$token_usage}"
   fi
 
   jq "${jq_args[@]}" "$jq_filter"
@@ -116,6 +132,29 @@ _validate_health_payload() {
     fi
   done
 
+  # Enum: trigger (optional — only validate when present)
+  local trigger_val
+  trigger_val="$(printf '%s' "$payload" | jq -r '.trigger // empty')"
+  if [ -n "$trigger_val" ]; then
+    local trigger_valid=0
+    local t
+    for t in $_VALID_TRIGGERS; do
+      if [ "$trigger_val" = "$t" ]; then trigger_valid=1; break; fi
+    done
+    if [ "$trigger_valid" -eq 0 ]; then
+      echo "health-report: validation failed — invalid trigger: ${trigger_val} (expected: ${_VALID_TRIGGERS})" >&2
+      return 1
+    fi
+  fi
+
+  # token_usage must be null or a JSON object (not a string, array, or number)
+  local token_usage_type
+  token_usage_type="$(printf '%s' "$payload" | jq -r 'if has("token_usage") and .token_usage != null then .token_usage | type else "absent" end')"
+  if [ "$token_usage_type" != "absent" ] && [ "$token_usage_type" != "object" ]; then
+    echo "health-report: validation failed — token_usage must be a JSON object, got: ${token_usage_type}" >&2
+    return 1
+  fi
+
   # Size budget
   local payload_size
   payload_size="$(printf '%s' "$payload" | wc -c | tr -d ' ')"
@@ -143,11 +182,11 @@ _validate_health_payload() {
 }
 
 # Send health report with retry logic for 5xx/network errors.
-# Args: url, payload, token_file
+# Args: url, payload, token (raw token or token file path)
 _send_health_report() {
   local url="$1"
   local payload="$2"
-  local token_file="$3"
+  local token_input="${3:-}"
   local max_retries="${HEALTH_REPORT_MAX_RETRIES}"
   local timeout="${HEALTH_REPORT_TIMEOUT_SECS}"
   local attempt=0
@@ -160,14 +199,30 @@ _send_health_report() {
     local curl_args=(-s -o /dev/null -w '%{http_code}' --max-time "$timeout")
     curl_args+=(-X POST -H 'Content-Type: application/json')
 
-    # Auth header — token read from file, same pattern as codebase (run-loop.sh)
-    if [ -n "$token_file" ] && [ -f "$token_file" ]; then
-      curl_args+=(-H "Authorization: Bearer $(cat "$token_file")")
+    # Auth header: pass via stdin (`-H @-`) so the token never appears in
+    # process argv and does not need to be staged in a temporary file.
+    local use_auth_header_stdin=0
+    local token_value=""
+    if [ -n "$token_input" ]; then
+      if [ -f "$token_input" ]; then
+        if ! token_value="$(tr -d '\r\n' < "$token_input")"; then
+          echo "health-report: failed to read token file: ${token_input}" >&2
+          return 1
+        fi
+      else
+        token_value="$token_input"
+      fi
+    fi
+    if [ -n "$token_value" ]; then
+      use_auth_header_stdin=1
     fi
 
     curl_args+=(-d "$payload" "$url")
-
-    http_code="$(curl "${curl_args[@]}")" || curl_exit=$?
+    if [ "$use_auth_header_stdin" -eq 1 ]; then
+      http_code="$(printf 'Authorization: Bearer %s\n' "$token_value" | curl "${curl_args[@]}" -H @-)" || curl_exit=$?
+    else
+      http_code="$(curl "${curl_args[@]}")" || curl_exit=$?
+    fi
 
     # Network error: curl exits non-zero with http_code empty or "000"
     # (connection refused, DNS failure, timeout before response, etc.)
@@ -250,23 +305,29 @@ _sleep_with_jitter() {
 # Args:
 #   agent_id             — agent identifier (e.g. "forager")
 #   repo                 — current repo in owner/repo format
-#   token_file           — path to bearer token file (may be empty)
+#   token                — bearer token (may be empty)
 #   run_id               — unique run identifier for idempotency
 #   outcome              — "success" | "failure" | "timeout"
 #   duration_secs        — run duration in seconds
 #   consecutive_failures — current streak of consecutive failures
 #   exit_code            — process exit code (optional)
 #   error                — error message (optional)
+#   next_run_at          — ISO 8601 timestamp of next scheduled run (optional)
+#   trigger              — "scheduled" | "mention" | "manual" | "task" (optional)
+#   token_usage_json     — JSON object with token usage data (optional)
 report_health_to_backend() {
   local agent_id="$1"
   local repo="$2"
-  local token_file="${3:-}"
+  local token="${3:-}"
   local run_id="$4"
   local outcome="$5"
   local duration_secs="$6"
   local consecutive_failures="${7:-0}"
   local exit_code="${8:-}"
   local error_msg="${9:-}"
+  local next_run_at="${10:-}"
+  local trigger="${11:-}"
+  local token_usage_json="${12:-}"
 
   if [ -z "$HEALTH_REPORT_URL" ]; then
     return 0
@@ -291,12 +352,80 @@ report_health_to_backend() {
     "$duration_secs" \
     "$consecutive_failures" \
     "$exit_code" \
-    "$error_msg"
+    "$error_msg" \
+    "$next_run_at" \
+    "$trigger" \
+    "$token_usage_json"
   )"
 
   if ! _validate_health_payload "$payload"; then
     return 1
   fi
 
-  _send_health_report "$HEALTH_REPORT_URL" "$payload" "$token_file"
+  _send_health_report "$HEALTH_REPORT_URL" "$payload" "$token"
+}
+
+# Send a periodic liveness heartbeat. Best-effort — never blocks the caller.
+# Bypasses _build_health_payload and _validate_health_payload entirely.
+#
+# Payload: {outcome: "heartbeat", agent_id, repo[, next_run_at]}
+# No run_id, duration_secs, or consecutive_failures — heartbeats carry
+# no run history and must not touch failure-count state on the backend.
+#
+# Args:
+#   agent_id     — agent identifier
+#   repo         — current repo in owner/repo format
+#   token_file   — path to bearer token file (may be empty)
+#   next_run_at  — ISO 8601 timestamp of agent's next scheduled run (optional)
+send_heartbeat() {
+  local agent_id="$1"
+  local repo="$2"
+  local token_file="${3:-}"
+  local next_run_at="${4:-}"
+
+  if [ -z "$HEALTH_REPORT_URL" ]; then
+    return 0
+  fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "health-report: jq not found — skipping heartbeat for ${agent_id}" >&2
+    return 0
+  fi
+
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "health-report: curl not found — skipping heartbeat for ${agent_id}" >&2
+    return 0
+  fi
+
+  local jq_args=(
+    -n
+    --arg agent_id "$agent_id"
+    --arg repo "$repo"
+    --arg outcome "heartbeat"
+  )
+
+  # shellcheck disable=SC2016  # jq placeholders must stay literal in the jq program string.
+  local jq_filter='{agent_id: $agent_id, repo: $repo, outcome: $outcome}'
+
+  if [ -n "$next_run_at" ]; then
+    jq_args+=(--arg next_run_at "$next_run_at")
+    jq_filter="${jq_filter} + {next_run_at: \$next_run_at}"
+  fi
+
+  local payload
+  payload="$(jq "${jq_args[@]}" "$jq_filter")"
+
+  local payload_size
+  payload_size="$(printf '%s' "$payload" | wc -c | tr -d ' ')"
+  if [ "$payload_size" -gt "$_HEALTH_PAYLOAD_MAX_BYTES" ]; then
+    echo "health-report: heartbeat payload too large (${payload_size} bytes) — skipping" >&2
+    return 0
+  fi
+
+  # Run in a subshell with bounded timeout/retries so a down backend cannot
+  # stall the controller loop. HEALTH_REPORT_MAX_RETRIES=0 means one attempt;
+  # HEALTH_REPORT_TIMEOUT_SECS=3 caps the curl --max-time. Both are local to
+  # the subshell so caller globals are not mutated.
+  ( HEALTH_REPORT_MAX_RETRIES=0 HEALTH_REPORT_TIMEOUT_SECS=3 \
+    _send_health_report "$HEALTH_REPORT_URL" "$payload" "$token_file" ) || true
 }
