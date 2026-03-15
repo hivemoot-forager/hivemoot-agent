@@ -29,7 +29,7 @@ tool calls.
 - One-shot orchestration: `scripts/run-multi.sh`
 - Loop orchestration: `scripts/run-loop.sh`
 - Per-agent execution unit: `scripts/run-once.sh`
-- Shared shell helpers: `scripts/lib.sh`
+- Shared shell helpers: `scripts/lib.sh`, `scripts/lib-validate.sh`, `scripts/lib-observability.sh`, `scripts/lib-slots.sh`
 - Host controller (per-job worker containers): `scripts/controller.sh`
 
 High-level flow:
@@ -48,7 +48,7 @@ Auth modes:
 
 - `api_key`
 - `subscription`
-- `auto` (resolved per provider via `resolve_effective_auth_mode` in `scripts/lib.sh`)
+- `auto` (resolved per provider via `resolve_effective_auth_mode` in `scripts/lib-validate.sh`)
 
 Provider secrets can be set inline or via `*_FILE` env vars and are loaded through
 `load_provider_secrets` in `scripts/lib.sh`.
@@ -62,7 +62,7 @@ Scripts in `scripts/*.sh` are Bash scripts and should follow existing patterns:
 - Use `local` variables inside functions
 - Prefer `printf` for structured output/logging
 - Use command arrays for safe argument handling
-- Reuse shared helpers in `scripts/lib.sh` instead of duplicating logic
+- Reuse shared helpers from `scripts/lib.sh` (core helpers), `scripts/lib-validate.sh` (validation/auth), `scripts/lib-observability.sh` (logging/health), and `scripts/lib-slots.sh` (slot management) instead of duplicating logic
 
 ## Key Implementation Patterns
 
