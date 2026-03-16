@@ -231,7 +231,11 @@ case "$cmd" in
   logs)
     container_id="${*: -1}"
     exited_file="$(container_exited_file "$container_id")"
-    echo "mock log stream"
+    if [ -n "${MOCK_DOCKER_LOG_CONTENT:-}" ]; then
+      printf '%s\n' "$MOCK_DOCKER_LOG_CONTENT"
+    else
+      echo "mock log stream"
+    fi
     while [ ! -f "$exited_file" ]; do
       sleep 0.1
     done
@@ -347,6 +351,7 @@ write_format=""
 auth_header=""
 url=""
 data=""
+read_header_from_stdin=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -361,6 +366,8 @@ while [ "$#" -gt 0 ]; do
     -H)
       if [ "${2:-}" != "" ] && [[ "${2:-}" == Authorization:* ]]; then
         auth_header="${2:-}"
+      elif [ "${2:-}" = "@-" ]; then
+        read_header_from_stdin=1
       fi
       shift 2
       ;;
@@ -386,6 +393,10 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+if [ "$read_header_from_stdin" -eq 1 ]; then
+  auth_header="$(tr -d '\r\n' <&0)"
+fi
 
 printf 'URL=%s AUTH=%s DATA=%s\n' "$url" "$auth_header" "$data" >> "${state_dir}/curl.log"
 
@@ -1015,14 +1026,18 @@ run_mentions_retry_after_failure_case() {
   local case_dir="$2"
   local run1_log=""
   local run2_log=""
+  local run3_log=""
   local watch_output=""
+  local retry_backoff_secs="300"
   local mention_failed_count=0
   local mention_completed_count=0
   local ack_log=""
   local ack_count=""
   local expected_ack_key="thread-retry:2026-02-20T04:21:00Z"
   local expected_state_file="${case_dir}/workspace/watch-state/worker.json"
+  local failed_file=""
   local summary_file=""
+  local -a failed_files=()
   local -a summary_files=()
 
   mkdir -p "$case_dir"
@@ -1047,6 +1062,7 @@ run_mentions_retry_after_failure_case() {
     WORKER_IMAGE="hivemoot-agent:test" \
     WATCH_MENTIONS="1" \
     WATCH_POLL_INTERVAL="30" \
+    WATCH_TRIGGER_FAILURE_BACKOFF_SECS="${retry_backoff_secs}" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
     AGENT_TIMEOUT_SECONDS="120" \
@@ -1055,6 +1071,12 @@ run_mentions_retry_after_failure_case() {
     bash "${repo_root}/scripts/controller.sh" >"$run1_log" 2>&1; then
     fail "first controller run unexpectedly succeeded in mention retry case"
   fi
+
+  shopt -s nullglob
+  failed_files=("${case_dir}/workspace"/queue/*.failed)
+  shopt -u nullglob
+  assert_eq "1" "${#failed_files[@]}" "expected one failed queue artifact after initial failure"
+  failed_file="${failed_files[0]}"
 
   run2_log="${case_dir}/controller-run2.log"
   env -i \
@@ -1072,6 +1094,7 @@ run_mentions_retry_after_failure_case() {
     WORKER_IMAGE="hivemoot-agent:test" \
     WATCH_MENTIONS="1" \
     WATCH_POLL_INTERVAL="30" \
+    WATCH_TRIGGER_FAILURE_BACKOFF_SECS="${retry_backoff_secs}" \
     AGENT_ID_01="worker" \
     AGENT_GITHUB_TOKEN_01="token-1" \
     AGENT_TIMEOUT_SECONDS="120" \
@@ -1079,8 +1102,37 @@ run_mentions_retry_after_failure_case() {
     PERIODIC_JITTER_SECS="0" \
     bash "${repo_root}/scripts/controller.sh" >"$run2_log" 2>&1
 
-  assert_file_contains "$run2_log" "worker: queued mention trigger for #88"
-  assert_file_not_contains "$run2_log" "duplicate mention suppressed (ack_key=${expected_ack_key})"
+  assert_file_contains "$run2_log" "duplicate mention suppressed (ack_key=${expected_ack_key})"
+  assert_file_not_contains "$run2_log" "worker: queued mention trigger for #88"
+
+  touch -t 202001010000 "$failed_file"
+
+  run3_log="${case_dir}/controller-run3.log"
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="0" \
+    MOCK_DOCKER_WAIT_EXIT="0" \
+    MOCK_HIVEMOOT_STATE_DIR="${case_dir}/hivemoot-state" \
+    MOCK_HIVEMOOT_WATCH_OUTPUT="${watch_output}" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    WATCH_MENTIONS="1" \
+    WATCH_POLL_INTERVAL="30" \
+    WATCH_TRIGGER_FAILURE_BACKOFF_SECS="${retry_backoff_secs}" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"$run3_log" 2>&1
+
+  assert_file_contains "$run3_log" "worker: queued mention trigger for #88"
+  assert_file_not_contains "$run3_log" "duplicate mention suppressed (ack_key=${expected_ack_key})"
 
   shopt -s nullglob
   summary_files=("${case_dir}/workspace"/workspaces/*/.hivemoot/summary)
@@ -1107,7 +1159,7 @@ run_mentions_retry_after_failure_case() {
   assert_eq "1" "$ack_count" "expected exactly one ack after retry success"
   assert_file_contains "$ack_log" "${expected_ack_key}|${expected_state_file}"
 
-  echo "PASS: failed mention jobs are retried on re-emitted events"
+  echo "PASS: failed mention jobs back off before retrying re-emitted events"
 }
 
 run_task_watch_case() {
@@ -1149,6 +1201,7 @@ run_task_watch_case() {
   assert_file_contains "$run_log" "-e RUN_MODE=task"
   assert_file_contains "$run_log" "-e TARGET_REPO=owner/claimed"
   assert_file_contains "$run_log" "-e AGENT_TASK_ID=task-claim-1"
+  assert_file_contains "$run_log" "-e AGENT_SESSION_KEY=task:task-claim-1"
   assert_file_contains "$run_log" "-e AGENT_TASK_PROMPT=Inspect queue behavior"
   assert_file_contains "$run_log" "-e AGENT_TASK_MESSAGES_FILE=/workspace/task-input/task-claim-1/messages.json"
   assert_file_contains "$run_log" "-e AGENT_TASK_CLAIM_TOKEN=claim-token-1"
@@ -1273,6 +1326,106 @@ run_task_watch_token_file_case() {
   assert_file_contains "$curl_log" "AUTH=Authorization: Bearer shared-token-from-file"
 
   echo "PASS: task-watch mode supports HIVEMOOT_AGENT_TOKEN_FILE without conflicts"
+}
+
+run_heartbeat_auth_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local expected_auth="$3"
+  shift 3
+  local -a auth_env=("$@")
+  local controller_pid=0
+  local controller_log=""
+  local curl_log=""
+  local deadline=0
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_curl "${case_dir}/mock-bin"
+
+  controller_log="${case_dir}/controller.log"
+  curl_log="${case_dir}/curl-state/curl.log"
+
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="0" \
+    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="loop" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    WATCH_MENTIONS="0" \
+    HEALTH_REPORT_URL="https://api.example.com/api/agent-health" \
+    HEARTBEAT_INTERVAL_SECS="1" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    "${auth_env[@]}" \
+    bash "${repo_root}/scripts/controller.sh" >"$controller_log" 2>&1 &
+  controller_pid=$!
+
+  deadline=$((SECONDS + 20))
+  while true; do
+    if [ -f "$curl_log" ] && grep -Fq "AUTH=${expected_auth}" "$curl_log" 2>/dev/null; then
+      break
+    fi
+    if ! kill -0 "$controller_pid" 2>/dev/null; then
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "controller exited before heartbeat auth was observed"
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      kill -TERM "$controller_pid" 2>/dev/null || true
+      wait "$controller_pid" 2>/dev/null || true
+      sed 's/^/  /' "$controller_log" >&2 || true
+      fail "timed out waiting for heartbeat auth"
+    fi
+    sleep 0.1
+  done
+
+  kill -TERM "$controller_pid" 2>/dev/null || true
+  wait "$controller_pid" 2>/dev/null || true
+
+  [ -f "$curl_log" ] || fail "missing curl log in heartbeat auth case"
+  assert_file_contains "$curl_log" "URL=https://api.example.com/api/agent-health"
+  assert_file_contains "$curl_log" "AUTH=${expected_auth}"
+  assert_file_contains "$curl_log" '"outcome": "heartbeat"'
+}
+
+run_heartbeat_inline_token_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+
+  run_heartbeat_auth_case \
+    "$repo_root" \
+    "$case_dir" \
+    "Authorization: Bearer shared-token" \
+    "HIVEMOOT_AGENT_TOKEN=shared-token"
+
+  echo "PASS: controller heartbeats authenticate with HIVEMOOT_AGENT_TOKEN"
+}
+
+run_heartbeat_token_file_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local token_file=""
+
+  token_file="${case_dir}/secrets/hivemoot-agent-token"
+  mkdir -p "$(dirname "$token_file")"
+  printf '%s' 'shared-token-from-file' > "$token_file"
+  chmod 600 "$token_file"
+
+  run_heartbeat_auth_case \
+    "$repo_root" \
+    "$case_dir" \
+    "Authorization: Bearer shared-token-from-file" \
+    "HIVEMOOT_AGENT_TOKEN_FILE=${token_file}"
+
+  echo "PASS: controller heartbeats authenticate with HIVEMOOT_AGENT_TOKEN_FILE"
 }
 
 run_task_watch_no_task_case() {
@@ -1937,6 +2090,62 @@ run_task_failure_report_case() {
   echo "PASS: task failure is reported to execute endpoint when worker exits non-zero"
 }
 
+run_task_failure_report_classified_error_case() {
+  # When the worker container exits non-zero and the container log contains a
+  # known error pattern from run-once.sh, the controller should include a
+  # classified (safe, pre-defined) error message in the action=fail payload
+  # instead of the generic "Worker exited with code N".
+  local repo_root="$1"
+  local case_dir="$2"
+  local curl_log=""
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  setup_mock_curl "${case_dir}/mock-bin"
+
+  # Inject a known run-once.sh error pattern into the mock container log.
+  # The classifier should recognize "Missing GitHub token" and return the
+  # safe classified message. The raw log text must NOT appear in the payload.
+  env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_EXIT="1" \
+    MOCK_DOCKER_LOG_CONTENT="Missing GitHub token. Set AGENT_GITHUB_TOKEN_FILE or AGENT_GITHUB_TOKEN (or GITHUB_TOKEN/GH_TOKEN)." \
+    MOCK_CURL_STATE_DIR="${case_dir}/curl-state" \
+    CONTROLLER_RUN_MODE="once" \
+    WATCH_TASKS="1" \
+    TASK_DISPATCH_AGENT_IDS="worker" \
+    AGENT_TASK_CLAIM_URL="https://api.example.com/api/tasks/claim" \
+    AGENT_TASK_EXECUTE_BASE_URL="https://api.example.com/api/tasks" \
+    HIVEMOOT_AGENT_TOKEN="shared-token" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    bash "${repo_root}/scripts/controller.sh" || true
+
+  curl_log="${case_dir}/curl-state/curl.log"
+  [ -f "$curl_log" ] || fail "missing curl log in task-failure-report-classified case"
+
+  # The fail payload must contain the classified message, not the generic one.
+  assert_file_contains "$curl_log" "GitHub token is missing"
+
+  # The raw log content must not be forwarded in the payload.
+  if grep -qF "Set AGENT_GITHUB_TOKEN_FILE" "$curl_log" 2>/dev/null; then
+    fail "raw log content must not appear in the task failure payload"
+  fi
+
+  # Generic fallback must NOT appear when classification succeeded.
+  if grep -qF "Worker exited with code" "$curl_log" 2>/dev/null; then
+    fail "generic error message must not appear when log was successfully classified"
+  fi
+
+  echo "PASS: controller classifies worker log and includes structured error in task fail payload"
+}
+
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmpdir="$(mktemp -d "${repo_root}/.tmp-controller-test.XXXXXX")"
@@ -1970,6 +2179,8 @@ run_mentions_retry_after_failure_case "$repo_root" "${tmpdir}/mentions-retry"
 run_task_watch_case "$repo_root" "${tmpdir}/task-watch"
 run_task_watch_linux_permission_repair_case "$repo_root" "${tmpdir}/task-watch-linux-permissions"
 run_task_watch_token_file_case "$repo_root" "${tmpdir}/task-watch-token-file"
+run_heartbeat_inline_token_case "$repo_root" "${tmpdir}/heartbeat-inline-token"
+run_heartbeat_token_file_case "$repo_root" "${tmpdir}/heartbeat-token-file"
 run_task_watch_no_task_case "$repo_root" "${tmpdir}/task-watch-empty"
 run_task_watch_invalid_repo_case "$repo_root" "${tmpdir}/task-watch-invalid-repo"
 run_task_watch_scope_validation_case "$repo_root" "${tmpdir}/task-watch-scope-validation"
@@ -1981,4 +2192,5 @@ run_exit_trap_reaps_job_subshells_case "$repo_root" "${tmpdir}/exit-trap-reap"
 run_same_agent_concurrent_case "$repo_root" "${tmpdir}/same-agent-concurrent"
 run_periodic_deferral_cleanup_case "$repo_root" "${tmpdir}/periodic-deferral-cleanup"
 run_task_failure_report_case "$repo_root" "${tmpdir}/task-failure-report"
+run_task_failure_report_classified_error_case "$repo_root" "${tmpdir}/task-failure-classified"
 echo "PASS: controller script checks"
