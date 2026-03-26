@@ -83,6 +83,37 @@ extract_codex_token_usage_from_log() {
   ' "$path" 2>/dev/null || true
 }
 
+# Extract token usage from a Gemini stream-json log.
+# Reads the final "type":"result" event and returns counts from the "stats" object.
+# Gemini CLI emits one result event per session (not per turn).
+# Field mapping: stats.input_tokens → input_tokens, stats.output_tokens → output_tokens,
+#   stats.cached → cache_read_input_tokens, stats.tool_calls → num_turns.
+# cost_usd and cache_creation_input_tokens are not available in Gemini stream output.
+# Outputs a compact JSON object or empty string on failure/unavailable.
+# Note: task-mode runs use --output-format text, so this function returns empty for them.
+extract_gemini_token_usage_from_log() {
+  local path="$1"
+  if [ ! -f "$path" ] || ! command -v jq >/dev/null 2>&1; then
+    return 0
+  fi
+  jq -Rrs '
+    [split("\n")[] | select(length > 0) | try fromjson catch null | select(. != null)]
+    | map(select(.type == "result")) | last
+    | if . == null or .stats == null then empty
+      else
+        {
+          input_tokens:                (.stats.input_tokens  // null),
+          output_tokens:               (.stats.output_tokens // null),
+          cache_read_input_tokens:     (.stats.cached        // null),
+          cache_creation_input_tokens: null,
+          cost_usd:                    null,
+          num_turns:                   (.stats.tool_calls    // null)
+        }
+        | with_entries(select(.value != null))
+      end
+  ' "$path" 2>/dev/null || true
+}
+
 # Extract a run summary string from the provider's NDJSON log.
 # Best-effort: returns empty string on failure, missing file, or unsupported provider.
 # Output is capped at max_bytes (default 1500) to stay within health payload budget.

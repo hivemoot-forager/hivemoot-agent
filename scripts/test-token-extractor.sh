@@ -279,6 +279,127 @@ test_codex_missing_file_returns_empty() {
   pass "codex: returns empty for missing log file"
 }
 
+# ── Gemini extraction tests ───────────────────────────────────────
+
+test_gemini_extracts_token_counts_from_result_stats() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"init","timestamp":"2026-01-01T00:00:00Z"}
+{"type":"message","role":"assistant","content":"Working on it"}
+{"type":"result","timestamp":"2026-01-01T00:00:05Z","status":"success","stats":{"input_tokens":1234,"output_tokens":567,"total_tokens":1801,"cached":0,"duration_ms":3200,"tool_calls":4}}
+EOF
+  local result
+  result="$(extract_gemini_token_usage_from_log "${TEST_TMP}/run.ndjson")"
+  [ -n "$result" ] || fail "expected non-empty result"
+
+  local input_tokens output_tokens cache_read num_turns
+  input_tokens="$(printf '%s' "$result" | jq '.input_tokens')"
+  output_tokens="$(printf '%s' "$result" | jq '.output_tokens')"
+  cache_read="$(printf '%s' "$result" | jq '.cache_read_input_tokens')"
+  num_turns="$(printf '%s' "$result" | jq '.num_turns')"
+
+  [ "$input_tokens" = "1234" ] || fail "input_tokens: expected 1234, got ${input_tokens}"
+  [ "$output_tokens" = "567" ]  || fail "output_tokens: expected 567, got ${output_tokens}"
+  [ "$cache_read" = "0" ]       || fail "cache_read_input_tokens: expected 0, got ${cache_read}"
+  [ "$num_turns" = "4" ]        || fail "num_turns: expected 4, got ${num_turns}"
+
+  pass "gemini: extracts input/output/cache/turns from result stats"
+}
+
+test_gemini_uses_final_result_event_when_multiple_present() {
+  source_extractor
+  # Two result events — only the last one should be used.
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"result","status":"success","stats":{"input_tokens":100,"output_tokens":10,"cached":0,"tool_calls":1}}
+{"type":"result","status":"success","stats":{"input_tokens":999,"output_tokens":88,"cached":5,"tool_calls":7}}
+EOF
+  local result
+  result="$(extract_gemini_token_usage_from_log "${TEST_TMP}/run.ndjson")"
+  [ -n "$result" ] || fail "expected non-empty result"
+
+  local input_tokens
+  input_tokens="$(printf '%s' "$result" | jq '.input_tokens')"
+  [ "$input_tokens" = "999" ] || fail "input_tokens: expected 999 (last event), got ${input_tokens}"
+
+  pass "gemini: uses final result event when multiple are present"
+}
+
+test_gemini_includes_nullable_fields_as_absent_when_no_value() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"result","status":"success","stats":{"input_tokens":100,"output_tokens":20,"cached":0,"tool_calls":2}}
+EOF
+  local result
+  result="$(extract_gemini_token_usage_from_log "${TEST_TMP}/run.ndjson")"
+  [ -n "$result" ] || fail "expected non-empty result"
+
+  # cache_creation_input_tokens and cost_usd are always null for Gemini — they should be absent.
+  local has_cache_creation has_cost
+  has_cache_creation="$(printf '%s' "$result" | jq 'has("cache_creation_input_tokens")')"
+  has_cost="$(printf '%s' "$result" | jq 'has("cost_usd")')"
+
+  [ "$has_cache_creation" = "false" ] || fail "cache_creation_input_tokens should be absent (null stripped)"
+  [ "$has_cost" = "false" ]           || fail "cost_usd should be absent (null stripped)"
+
+  pass "gemini: null cache_creation_input_tokens and cost_usd are stripped from output"
+}
+
+test_gemini_with_cache_hits_maps_to_cache_read_field() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"result","status":"success","stats":{"input_tokens":500,"output_tokens":80,"cached":200,"total_tokens":780,"tool_calls":3}}
+EOF
+  local result
+  result="$(extract_gemini_token_usage_from_log "${TEST_TMP}/run.ndjson")"
+  [ -n "$result" ] || fail "expected non-empty result"
+
+  local cache_read
+  cache_read="$(printf '%s' "$result" | jq '.cache_read_input_tokens')"
+  [ "$cache_read" = "200" ] || fail "cache_read_input_tokens: expected 200, got ${cache_read}"
+
+  pass "gemini: stats.cached maps to cache_read_input_tokens"
+}
+
+test_gemini_no_result_event_returns_empty() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"init","timestamp":"2026-01-01T00:00:00Z"}
+{"type":"message","role":"assistant","content":"hello"}
+EOF
+  local result
+  result="$(extract_gemini_token_usage_from_log "${TEST_TMP}/run.ndjson")"
+  [ -z "$result" ] || fail "expected empty when no result event, got: ${result}"
+  pass "gemini: returns empty when no result event present"
+}
+
+test_gemini_result_without_stats_returns_empty() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"result","status":"success"}
+EOF
+  local result
+  result="$(extract_gemini_token_usage_from_log "${TEST_TMP}/run.ndjson")"
+  [ -z "$result" ] || fail "expected empty when result has no stats, got: ${result}"
+  pass "gemini: returns empty when result event has no stats field"
+}
+
+test_gemini_missing_file_returns_empty() {
+  source_extractor
+  local result
+  result="$(extract_gemini_token_usage_from_log "${TEST_TMP}/nonexistent.ndjson")"
+  [ -z "$result" ] || fail "expected empty for missing file, got: ${result}"
+  pass "gemini: returns empty for missing log file"
+}
+
+test_gemini_empty_file_returns_empty() {
+  source_extractor
+  : > "${TEST_TMP}/empty.ndjson"
+  local result
+  result="$(extract_gemini_token_usage_from_log "${TEST_TMP}/empty.ndjson")"
+  [ -z "$result" ] || fail "expected empty for empty log, got: ${result}"
+  pass "gemini: returns empty for empty log file"
+}
+
 # ── Run summary extraction tests ──────────────────────────────────
 
 test_run_summary_claude_extracts_result_field() {
@@ -396,6 +517,17 @@ run_test test_codex_single_turn_returns_correct_counts
 run_test test_codex_includes_nullable_fields_as_null
 run_test test_codex_no_turn_completed_returns_empty
 run_test test_codex_missing_file_returns_empty
+echo ""
+
+echo "  Gemini — token extraction:"
+run_test test_gemini_extracts_token_counts_from_result_stats
+run_test test_gemini_uses_final_result_event_when_multiple_present
+run_test test_gemini_includes_nullable_fields_as_absent_when_no_value
+run_test test_gemini_with_cache_hits_maps_to_cache_read_field
+run_test test_gemini_no_result_event_returns_empty
+run_test test_gemini_result_without_stats_returns_empty
+run_test test_gemini_missing_file_returns_empty
+run_test test_gemini_empty_file_returns_empty
 echo ""
 
 echo "  Run summary — extraction:"

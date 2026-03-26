@@ -1258,9 +1258,10 @@ if [ -n "${HEALTH_REPORT_URL:-}" ]; then
   _token_usage_json=""
   if [ -n "${last_command_log:-}" ] && [ -f "${last_command_log}" ]; then
     case "$provider" in
-      claude) _token_usage_json="$(extract_claude_token_usage_from_log "$last_command_log")" || true ;;
-      codex)  _token_usage_json="$(extract_codex_token_usage_from_log "$last_command_log")" || true ;;
-      *)      _token_usage_json="" ;;
+      claude)  _token_usage_json="$(extract_claude_token_usage_from_log "$last_command_log")"  || true ;;
+      codex)   _token_usage_json="$(extract_codex_token_usage_from_log "$last_command_log")"  || true ;;
+      gemini)  _token_usage_json="$(extract_gemini_token_usage_from_log "$last_command_log")" || true ;;
+      *)       _token_usage_json="" ;;
     esac
   fi
 
