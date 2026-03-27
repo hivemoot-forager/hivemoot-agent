@@ -87,7 +87,8 @@ extract_codex_token_usage_from_log() {
 # Reads the final "type":"result" event and returns counts from the "stats" object.
 # Gemini CLI emits one result event per session (not per turn).
 # Field mapping: stats.input_tokens → input_tokens, stats.output_tokens → output_tokens,
-#   stats.cached → cache_read_input_tokens, stats.tool_calls → num_turns.
+#   stats.cached → cache_read_input_tokens.
+# num_turns is omitted — stats.tool_calls counts tool invocations, not model turns.
 # cost_usd and cache_creation_input_tokens are not available in Gemini stream output.
 # Outputs a compact JSON object or empty string on failure/unavailable.
 # Note: task-mode runs use --output-format text, so this function returns empty for them.
@@ -106,8 +107,7 @@ extract_gemini_token_usage_from_log() {
           output_tokens:               (.stats.output_tokens // null),
           cache_read_input_tokens:     (.stats.cached        // null),
           cache_creation_input_tokens: null,
-          cost_usd:                    null,
-          num_turns:                   (.stats.tool_calls    // null)
+          cost_usd:                    null
         }
         | with_entries(select(.value != null))
       end

@@ -292,18 +292,18 @@ EOF
   result="$(extract_gemini_token_usage_from_log "${TEST_TMP}/run.ndjson")"
   [ -n "$result" ] || fail "expected non-empty result"
 
-  local input_tokens output_tokens cache_read num_turns
+  local input_tokens output_tokens cache_read has_num_turns
   input_tokens="$(printf '%s' "$result" | jq '.input_tokens')"
   output_tokens="$(printf '%s' "$result" | jq '.output_tokens')"
   cache_read="$(printf '%s' "$result" | jq '.cache_read_input_tokens')"
-  num_turns="$(printf '%s' "$result" | jq '.num_turns')"
+  has_num_turns="$(printf '%s' "$result" | jq 'has("num_turns")')"
 
-  [ "$input_tokens" = "1234" ] || fail "input_tokens: expected 1234, got ${input_tokens}"
-  [ "$output_tokens" = "567" ]  || fail "output_tokens: expected 567, got ${output_tokens}"
-  [ "$cache_read" = "0" ]       || fail "cache_read_input_tokens: expected 0, got ${cache_read}"
-  [ "$num_turns" = "4" ]        || fail "num_turns: expected 4, got ${num_turns}"
+  [ "$input_tokens" = "1234" ]     || fail "input_tokens: expected 1234, got ${input_tokens}"
+  [ "$output_tokens" = "567" ]     || fail "output_tokens: expected 567, got ${output_tokens}"
+  [ "$cache_read" = "0" ]          || fail "cache_read_input_tokens: expected 0, got ${cache_read}"
+  [ "$has_num_turns" = "false" ]   || fail "num_turns should be absent (tool_calls != model turns)"
 
-  pass "gemini: extracts input/output/cache/turns from result stats"
+  pass "gemini: extracts input/output/cache from result stats; num_turns absent"
 }
 
 test_gemini_uses_final_result_event_when_multiple_present() {
