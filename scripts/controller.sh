@@ -1308,6 +1308,7 @@ handle_shutdown() {
   stop_schedulers
   stop_watchers
   stop_controller_workers
+  stop_job_subshells
 }
 
 stop_job_subshells() {
@@ -1321,8 +1322,14 @@ stop_job_subshells() {
     kill -TERM "$pid" 2>/dev/null || true
   done
 
+  local exit_code=0
   for pid in "${running_pids[@]}"; do
-    wait "$pid" 2>/dev/null || true
+    if wait "$pid" 2>/dev/null; then
+      exit_code=0
+    else
+      exit_code=$?
+    fi
+    record_job_completion "$pid" "$exit_code"
   done
 
   running_pids=()

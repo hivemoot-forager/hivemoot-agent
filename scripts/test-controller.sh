@@ -1893,6 +1893,87 @@ run_exit_trap_reaps_job_subshells_case() {
   echo "PASS: EXIT trap cleanup reaps tracked job subshells (controller_exit=${controller_status})"
 }
 
+run_shutdown_term_stops_job_subshells_case() {
+  local repo_root="$1"
+  local case_dir="$2"
+  local controller_pid=0
+  local controller_status=0
+  local run_log=""
+  local deadline=0
+
+  mkdir -p "$case_dir"
+  setup_mock_docker "${case_dir}/mock-bin"
+  run_log="${case_dir}/mock-state/docker-run.log"
+
+  # MOCK_DOCKER_WAIT_SLEEP_SECS=60 ensures the job subshell is blocked in
+  # `docker wait` when SIGTERM arrives.  Without the fix (stop_job_subshells
+  # in handle_shutdown), wait_for_all_jobs would spin for the full 60s.
+  # Start the controller under setsid so it owns its own process group;
+  # we kill the group after wait() to reap any grandchildren (mock docker-wait
+  # sleep) that survive the controller exiting on SIGTERM.
+  setsid env -i \
+    PATH="${case_dir}/mock-bin:${PATH}" \
+    HOME="${case_dir}/home" \
+    MOCK_DOCKER_STATE_DIR="${case_dir}/mock-state" \
+    MOCK_DOCKER_WAIT_SLEEP_SECS="60" \
+    TARGET_REPO="owner/repo" \
+    CONTROLLER_RUN_MODE="once" \
+    CONTROLLER_MAX_WORKERS="1" \
+    CONTROLLER_WORKSPACE_ROOT="${case_dir}/workspace" \
+    WORKER_IMAGE="hivemoot-agent:test" \
+    AGENT_ID_01="worker" \
+    AGENT_GITHUB_TOKEN_01="token-1" \
+    AGENT_TIMEOUT_SECONDS="120" \
+    PERIODIC_INTERVAL_SECS="60" \
+    PERIODIC_JITTER_SECS="0" \
+    bash "${repo_root}/scripts/controller.sh" >"${case_dir}/controller.log" 2>&1 &
+  controller_pid=$!
+
+  # Wait for the first docker run, confirming the job subshell is alive
+  # and blocked in `docker wait`.
+  deadline=$((SECONDS + 15))
+  while true; do
+    if [ -f "$run_log" ] && [ "$(wc -l < "$run_log" | tr -d '[:space:]')" -ge 1 ]; then
+      break
+    fi
+    if ! kill -0 "$controller_pid" 2>/dev/null; then
+      sed 's/^/  /' "${case_dir}/controller.log" >&2 || true
+      fail "controller exited before first launch in SIGTERM subshell-stop case"
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      sed 's/^/  /' "${case_dir}/controller.log" >&2 || true
+      fail "timed out waiting for first worker launch in SIGTERM subshell-stop case"
+    fi
+    sleep 0.1
+  done
+
+  kill -TERM "$controller_pid"
+
+  # Controller must exit within 10s — well under MOCK_DOCKER_WAIT_SLEEP_SECS=60.
+  # If stop_job_subshells is missing from handle_shutdown, wait_for_all_jobs
+  # blocks until docker wait returns (60s), causing this assertion to fail.
+  deadline=$((SECONDS + 10))
+  while kill -0 "$controller_pid" 2>/dev/null; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      kill -KILL "$controller_pid" 2>/dev/null || true
+      fail "controller did not exit within 10s after SIGTERM — stop_job_subshells missing from handle_shutdown?"
+    fi
+    sleep 0.1
+  done
+
+  if wait "$controller_pid"; then
+    controller_status=0
+  else
+    controller_status=$?
+  fi
+
+  # Kill the entire process group to reap any orphaned mock docker-wait
+  # grandchildren (bash doesn't kill grandchildren when it exits on SIGTERM).
+  kill -KILL -- "-${controller_pid}" 2>/dev/null || true
+
+  echo "PASS: SIGTERM stops job subshells via handle_shutdown (controller_exit=${controller_status})"
+}
+
 run_global_slots_cross_controller_case() {
   local repo_root="$1"
   local case_dir="$2"
@@ -2706,6 +2787,7 @@ run_workspace_ttl_disabled_case "$repo_root" "${tmpdir}/workspace-ttl-disabled"
 run_workspace_prune_failure_reporting_case "$repo_root" "${tmpdir}/workspace-prune-failure-reporting"
 run_shutdown_signal_case "$repo_root" "${tmpdir}/shutdown"
 run_exit_trap_reaps_job_subshells_case "$repo_root" "${tmpdir}/exit-trap-reap"
+run_shutdown_term_stops_job_subshells_case "$repo_root" "${tmpdir}/shutdown-term-subshells"
 run_global_slots_cross_controller_case "$repo_root" "${tmpdir}/global-slots-cross-controller"
 run_global_slot_mention_timeout_requeue_case "$repo_root" "${tmpdir}/global-slot-mention-timeout"
 run_global_slot_mention_timeout_missing_run_dir_case "$repo_root" "${tmpdir}/global-slot-mention-timeout-missing-run-dir"
