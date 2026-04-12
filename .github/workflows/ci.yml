@@ -84,6 +84,8 @@ jobs:
         run: bash scripts/test-health-reporter.sh
       - name: Verify token extractor extraction behavior
         run: bash scripts/test-token-extractor.sh
+      - name: Verify gh auth setup-git runs after HOME isolation switch
+        run: bash scripts/test-run-once-git-helper-ordering.sh
       - name: Verify plugin formatter tests
         run: python3 cli/tests/test_formatter.py
       - name: Verify engine and oneshot tests

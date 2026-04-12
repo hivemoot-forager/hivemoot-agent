@@ -354,14 +354,17 @@ identity_resolve
 # shellcheck disable=SC2154  # agent_name is populated by the sourced identity plugin
 log "Identity: ${AGENT_IDENTITY:-unknown} agent_name=${agent_name}"
 
-# ── Workload Setup ────────────────────────────────────────────────
-workload_setup
-
 mkdir -p "$workspace_root" "$log_dir"
 
 # Create an isolated HOME for this job and seed only auth credentials
 # (not conversation caches or session state). Skipped in managed mode
 # where the caller (run-loop.sh / controller) handles HOME isolation.
+#
+# This block MUST run before workload_setup so that the git credential
+# helper (configured by github_auth inside workload_setup) is written
+# into the correct HOME. Running workload_setup first would leave the
+# helper in the container ~/.gitconfig while all git operations run
+# under $job_home, breaking authenticated pushes (see issue #477).
 if [ -n "$job_home" ]; then
   mkdir -p "$job_home/.config" "$job_home/.cache" "$job_home/.local/share"
   chmod 700 "$job_home" "$job_home/.config" "$job_home/.cache" \
@@ -379,6 +382,11 @@ if [ -n "$job_home" ]; then
   export HOME="$job_home"
   log "Job HOME set to: ${job_home}"
 fi
+
+# ── Workload Setup ────────────────────────────────────────────────
+# Runs after HOME isolation so that the git credential helper (written
+# by github_auth) lands in the correct HOME, not the container HOME.
+workload_setup
 
 inject_agent_memory() {
   # AGENT_MEMORY_MODE controls what gets injected into the system prompt:
