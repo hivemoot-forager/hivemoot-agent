@@ -83,6 +83,86 @@ extract_codex_token_usage_from_log() {
   ' "$path" 2>/dev/null || true
 }
 
+# Extract token usage from a Gemini CLI NDJSON stream-json log.
+# Uses the final "type":"result" event emitted by --output-format stream-json.
+# Gemini stats fields: input_tokens (prompt), output_tokens (candidates),
+#   cached (cache read tokens), input (net non-cached input), models (per-model).
+# Maps: input_tokens → input_tokens, output_tokens → output_tokens,
+#   cached → cache_read_input_tokens (no cache-creation concept in Gemini).
+# Top-level fields in output: input_tokens, output_tokens, cache_read_input_tokens,
+#   num_turns (tool_calls), model_breakdown.
+# Outputs a compact JSON object or empty string on failure/unavailable.
+#
+# Source: google-gemini/gemini-cli
+#   packages/core/src/output/stream-json-formatter.ts (StreamStats type)
+#   packages/core/src/output/stream-json-formatter.test.ts (exact field names verified)
+extract_gemini_token_usage_from_log() {
+  local path="$1"
+  if [ ! -f "$path" ] || ! command -v jq >/dev/null 2>&1; then
+    return 0
+  fi
+  jq -Rrs '
+    [split("\n")[] | select(length > 0) | try fromjson catch null | select(. != null)]
+    | map(select(.type == "result")) | last
+    | if . == null then empty
+      else
+        (.stats // {}) as $s |
+        {
+          input_tokens:            ($s.input_tokens          // null),
+          output_tokens:           ($s.output_tokens         // null),
+          cache_read_input_tokens: ($s.cached                // null),
+          num_turns:               ($s.tool_calls            // null),
+          model_breakdown: (
+            if ($s.models | (type == "object") and (keys | length) > 0) then
+              $s.models | with_entries(.value = (
+                .value | {
+                  input_tokens:            (.input_tokens  // null),
+                  output_tokens:           (.output_tokens // null),
+                  cache_read_input_tokens: (.cached        // null)
+                } | with_entries(select(.value != null))
+              ))
+            else null end
+          )
+        }
+        | with_entries(select(.value != null))
+      end
+  ' "$path" 2>/dev/null || true
+}
+
+# Extract token usage from an OpenCode (sst/opencode) NDJSON run log.
+# Requires opencode to be invoked with --format json; the default text output
+# has no machine-readable token data.
+# Sums tokens across all "type":"step_finish" events.
+# Each step_finish.part.tokens has: input, output, cache.read, cache.write.
+# cost is summed from step_finish.part.cost.
+# Outputs a compact JSON object or empty string on failure/unavailable.
+#
+# Source: sst/opencode
+#   packages/opencode/src/session/message-v2.ts  (StepFinishPart schema)
+#   packages/opencode/src/cli/cmd/run.ts         (step_finish emit in json format)
+extract_opencode_token_usage_from_log() {
+  local path="$1"
+  if [ ! -f "$path" ] || ! command -v jq >/dev/null 2>&1; then
+    return 0
+  fi
+  jq -Rrs '
+    [split("\n")[] | select(length > 0) | try fromjson catch null | select(. != null)]
+    | map(select(.type == "step_finish") | .part // empty)
+    | if length == 0 then empty
+      else
+        {
+          input_tokens:                ([.[].tokens.input          // 0] | add),
+          output_tokens:               ([.[].tokens.output         // 0] | add),
+          cache_read_input_tokens:     ([.[].tokens.cache.read     // 0] | add),
+          cache_creation_input_tokens: ([.[].tokens.cache.write    // 0] | add),
+          cost_usd:                    ([.[].cost                  // 0] | add | if . == 0 then null else . end),
+          num_turns:                   length
+        }
+        | with_entries(select(.value != null))
+      end
+  ' "$path" 2>/dev/null || true
+}
+
 # Extract a run summary string from the provider's NDJSON log.
 # Best-effort: returns empty string on failure, missing file, or unsupported provider.
 # Output is capped at max_bytes (default 1500) to stay within health payload budget.

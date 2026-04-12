@@ -374,6 +374,177 @@ EOF
   pass "run summary is truncated to max_bytes when result is too long"
 }
 
+# ── Gemini extraction tests ───────────────────────────────────────
+# Fixture format: Gemini CLI --output-format stream-json (NDJSON).
+# Final "result" event carries stats: input_tokens, output_tokens, cached,
+# tool_calls, models (per-model breakdown).
+# Source: google-gemini/gemini-cli
+#   packages/core/src/output/stream-json-formatter.ts
+#   packages/core/src/output/stream-json-formatter.test.ts
+
+test_gemini_extracts_tokens_from_result_stats() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"init","timestamp":"2025-10-10T12:00:00.000Z","session_id":"s1","model":"gemini-2.0-flash"}
+{"type":"message","timestamp":"2025-10-10T12:00:01.000Z","role":"user","content":"List files"}
+{"type":"result","timestamp":"2025-10-10T12:00:05.000Z","status":"success","stats":{"total_tokens":180,"input_tokens":120,"output_tokens":60,"cached":30,"input":90,"duration_ms":5000,"tool_calls":2,"models":{"gemini-2.0-flash":{"total_tokens":180,"input_tokens":120,"output_tokens":60,"cached":30,"input":90}}}}
+EOF
+  local result
+  result="$(extract_gemini_token_usage_from_log "${TEST_TMP}/run.ndjson")"
+  [ -n "$result" ] || fail "expected non-empty result"
+
+  local input_tokens output_tokens cache_read num_turns
+  input_tokens="$(printf '%s' "$result" | jq '.input_tokens')"
+  output_tokens="$(printf '%s' "$result" | jq '.output_tokens')"
+  cache_read="$(printf '%s' "$result" | jq '.cache_read_input_tokens')"
+  num_turns="$(printf '%s' "$result" | jq '.num_turns')"
+
+  [ "$input_tokens" = "120" ] || fail "input_tokens: expected 120, got ${input_tokens}"
+  [ "$output_tokens" = "60" ] || fail "output_tokens: expected 60, got ${output_tokens}"
+  [ "$cache_read" = "30" ]    || fail "cache_read_input_tokens: expected 30, got ${cache_read}"
+  [ "$num_turns" = "2" ]      || fail "num_turns (tool_calls): expected 2, got ${num_turns}"
+
+  pass "gemini: extracts input/output/cached/tool_calls from result.stats"
+}
+
+test_gemini_model_breakdown_in_output() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"result","timestamp":"2025-10-10T12:00:05.000Z","status":"success","stats":{"total_tokens":250,"input_tokens":150,"output_tokens":100,"cached":0,"input":150,"duration_ms":3000,"tool_calls":0,"models":{"gemini-pro":{"total_tokens":80,"input_tokens":50,"output_tokens":30,"cached":0,"input":50},"gemini-ultra":{"total_tokens":170,"input_tokens":100,"output_tokens":70,"cached":0,"input":100}}}}
+EOF
+  local result
+  result="$(extract_gemini_token_usage_from_log "${TEST_TMP}/run.ndjson")"
+  [ -n "$result" ] || fail "expected non-empty result"
+
+  local breakdown_keys
+  breakdown_keys="$(printf '%s' "$result" | jq '.model_breakdown | keys | sort | join(",")')"
+  [ "$breakdown_keys" = '"gemini-pro,gemini-ultra"' ] || fail "model_breakdown keys: expected gemini-pro,gemini-ultra, got ${breakdown_keys}"
+
+  local pro_output ultra_input
+  pro_output="$(printf '%s' "$result" | jq '.model_breakdown["gemini-pro"].output_tokens')"
+  ultra_input="$(printf '%s' "$result" | jq '.model_breakdown["gemini-ultra"].input_tokens')"
+  [ "$pro_output" = "30" ]   || fail "gemini-pro output_tokens: expected 30, got ${pro_output}"
+  [ "$ultra_input" = "100" ] || fail "gemini-ultra input_tokens: expected 100, got ${ultra_input}"
+
+  pass "gemini: model_breakdown includes per-model token counts"
+}
+
+test_gemini_cached_tokens_map_to_cache_read() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"result","timestamp":"2025-10-10T12:00:05.000Z","status":"success","stats":{"total_tokens":100,"input_tokens":80,"output_tokens":20,"cached":40,"input":40,"duration_ms":1000,"tool_calls":0,"models":{}}}
+EOF
+  local result
+  result="$(extract_gemini_token_usage_from_log "${TEST_TMP}/run.ndjson")"
+  [ -n "$result" ] || fail "expected non-empty result"
+
+  local cache_read
+  cache_read="$(printf '%s' "$result" | jq '.cache_read_input_tokens')"
+  [ "$cache_read" = "40" ] || fail "cache_read_input_tokens: expected 40 (from stats.cached), got ${cache_read}"
+
+  # Gemini has no cache creation concept — field must be absent
+  local has_creation
+  has_creation="$(printf '%s' "$result" | jq 'has("cache_creation_input_tokens")')"
+  [ "$has_creation" = "false" ] || fail "expected no cache_creation_input_tokens for gemini, got ${has_creation}"
+
+  pass "gemini: stats.cached maps to cache_read_input_tokens (no cache creation)"
+}
+
+test_gemini_no_result_event_returns_empty() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"init","timestamp":"2025-10-10T12:00:00.000Z","session_id":"s1","model":"gemini-2.0-flash"}
+{"type":"message","timestamp":"2025-10-10T12:00:01.000Z","role":"user","content":"Hi"}
+EOF
+  local result
+  result="$(extract_gemini_token_usage_from_log "${TEST_TMP}/run.ndjson")"
+  [ -z "$result" ] || fail "expected empty when no result event, got: ${result}"
+  pass "gemini: returns empty when no result event present"
+}
+
+test_gemini_missing_file_returns_empty() {
+  source_extractor
+  local result
+  result="$(extract_gemini_token_usage_from_log "${TEST_TMP}/nonexistent.ndjson")"
+  [ -z "$result" ] || fail "expected empty for missing file, got: ${result}"
+  pass "gemini: returns empty for missing log file"
+}
+
+# ── OpenCode extraction tests ─────────────────────────────────────
+# Fixture format: OpenCode (sst/opencode) --format json NDJSON output.
+# "step_finish" events carry part.tokens.{input, output, cache.{read,write}}
+# and part.cost. Tokens are summed across all steps.
+# Source: sst/opencode
+#   packages/opencode/src/session/message-v2.ts  (StepFinishPart schema)
+#   packages/opencode/src/cli/cmd/run.ts         (step_finish emit)
+
+test_opencode_sums_tokens_across_steps() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"step_finish","timestamp":1000,"sessionID":"s1","part":{"type":"step-finish","reason":"tool_use","cost":0.001,"tokens":{"total":80,"input":50,"output":30,"reasoning":0,"cache":{"read":10,"write":5}}}}
+{"type":"step_finish","timestamp":2000,"sessionID":"s1","part":{"type":"step-finish","reason":"end_turn","cost":0.002,"tokens":{"total":120,"input":70,"output":50,"reasoning":0,"cache":{"read":20,"write":0}}}}
+EOF
+  local result
+  result="$(extract_opencode_token_usage_from_log "${TEST_TMP}/run.ndjson")"
+  [ -n "$result" ] || fail "expected non-empty result"
+
+  local input_tokens output_tokens cache_read cache_write cost num_turns
+  input_tokens="$(printf '%s' "$result" | jq '.input_tokens')"
+  output_tokens="$(printf '%s' "$result" | jq '.output_tokens')"
+  cache_read="$(printf '%s' "$result" | jq '.cache_read_input_tokens')"
+  cache_write="$(printf '%s' "$result" | jq '.cache_creation_input_tokens')"
+  cost="$(printf '%s' "$result" | jq '.cost_usd')"
+  num_turns="$(printf '%s' "$result" | jq '.num_turns')"
+
+  [ "$input_tokens" = "120" ]    || fail "input_tokens: expected 120, got ${input_tokens}"
+  [ "$output_tokens" = "80" ]    || fail "output_tokens: expected 80, got ${output_tokens}"
+  [ "$cache_read" = "30" ]       || fail "cache_read_input_tokens: expected 30, got ${cache_read}"
+  [ "$cache_write" = "5" ]       || fail "cache_creation_input_tokens: expected 5, got ${cache_write}"
+  [ "$num_turns" = "2" ]         || fail "num_turns: expected 2, got ${num_turns}"
+  # cost: 0.001 + 0.002 = 0.003
+  local cost_ok
+  cost_ok="$(printf '%s' "$result" | jq '.cost_usd > 0')"
+  [ "$cost_ok" = "true" ] || fail "cost_usd: expected > 0, got ${cost}"
+
+  pass "opencode: sums input/output/cache tokens and cost across all step_finish events"
+}
+
+test_opencode_zero_cost_omitted() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"step_finish","timestamp":1000,"sessionID":"s1","part":{"type":"step-finish","reason":"end_turn","cost":0,"tokens":{"total":50,"input":30,"output":20,"reasoning":0,"cache":{"read":0,"write":0}}}}
+EOF
+  local result
+  result="$(extract_opencode_token_usage_from_log "${TEST_TMP}/run.ndjson")"
+  [ -n "$result" ] || fail "expected non-empty result"
+
+  local has_cost
+  has_cost="$(printf '%s' "$result" | jq 'has("cost_usd")')"
+  [ "$has_cost" = "false" ] || fail "expected cost_usd to be omitted when zero, but was present"
+
+  pass "opencode: cost_usd is omitted when total cost is zero"
+}
+
+test_opencode_no_step_finish_returns_empty() {
+  source_extractor
+  cat > "${TEST_TMP}/run.ndjson" <<'EOF'
+{"type":"text","timestamp":1000,"sessionID":"s1","part":{"type":"text","text":"hello"}}
+{"type":"tool_use","timestamp":2000,"sessionID":"s1","part":{"type":"tool","tool":"bash"}}
+EOF
+  local result
+  result="$(extract_opencode_token_usage_from_log "${TEST_TMP}/run.ndjson")"
+  [ -z "$result" ] || fail "expected empty when no step_finish events, got: ${result}"
+  pass "opencode: returns empty when no step_finish events present"
+}
+
+test_opencode_missing_file_returns_empty() {
+  source_extractor
+  local result
+  result="$(extract_opencode_token_usage_from_log "${TEST_TMP}/nonexistent.ndjson")"
+  [ -z "$result" ] || fail "expected empty for missing file, got: ${result}"
+  pass "opencode: returns empty for missing log file"
+}
+
 # ── run all tests ─────────────────────────────────────────────────
 
 echo "Running token extractor tests"
@@ -396,6 +567,21 @@ run_test test_codex_single_turn_returns_correct_counts
 run_test test_codex_includes_nullable_fields_as_null
 run_test test_codex_no_turn_completed_returns_empty
 run_test test_codex_missing_file_returns_empty
+echo ""
+
+echo "  Gemini — token extraction:"
+run_test test_gemini_extracts_tokens_from_result_stats
+run_test test_gemini_model_breakdown_in_output
+run_test test_gemini_cached_tokens_map_to_cache_read
+run_test test_gemini_no_result_event_returns_empty
+run_test test_gemini_missing_file_returns_empty
+echo ""
+
+echo "  OpenCode — token extraction:"
+run_test test_opencode_sums_tokens_across_steps
+run_test test_opencode_zero_cost_omitted
+run_test test_opencode_no_step_finish_returns_empty
+run_test test_opencode_missing_file_returns_empty
 echo ""
 
 echo "  Run summary — extraction:"
