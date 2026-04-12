@@ -133,6 +133,42 @@ def test_append_agent_memory_sanitizes_closing_tag(tmp_path):
     assert prompt.count("</agent-memory>") == 1  # injected one stripped
 
 
+# ── OpenCode _extract_response tests ─────────────────────────────
+
+
+def test_extract_opencode_single_text_event():
+    output = (
+        '{"type":"step_start","sessionID":"s1","time":{"start":"2025-01-01"}}\n'
+        '{"type":"text","text":"Hello from OpenCode","synthetic":false,"time":{"start":"2025-01-01","end":"2025-01-01"}}\n'
+        '{"type":"step_finish","sessionID":"s1","part":{"type":"step-finish","reason":"end_turn","cost":0.002,"tokens":{"total":120,"input":70,"output":50,"reasoning":0,"cache":{"read":0,"write":0}}}}\n'
+    )
+    assert _extract_response(output) == "Hello from OpenCode"
+
+
+def test_extract_opencode_multiple_text_events_concatenated():
+    output = (
+        '{"type":"text","text":"First part. ","synthetic":false}\n'
+        '{"type":"text","text":"Second part.","synthetic":false}\n'
+        '{"type":"step_finish","sessionID":"s1","part":{"type":"step-finish","reason":"end_turn","cost":0.001,"tokens":{"total":10,"input":5,"output":5,"reasoning":0,"cache":{"read":0,"write":0}}}}\n'
+    )
+    assert _extract_response(output) == "First part. Second part."
+
+
+def test_extract_opencode_skips_synthetic_text():
+    output = (
+        '{"type":"text","text":"[tool result summary]","synthetic":true}\n'
+        '{"type":"text","text":"Real response.","synthetic":false}\n'
+    )
+    assert _extract_response(output) == "Real response."
+
+
+def test_extract_opencode_all_synthetic_returns_empty_structured():
+    # All text is synthetic — falls through to longest non-JSON line fallback.
+    output = '{"type":"text","text":"[injected]","synthetic":true}\n'
+    # No non-JSON lines exist, so result is empty.
+    assert _extract_response(output) == ""
+
+
 # ── _load_file_secrets tests ──────────────────────────────────────
 
 

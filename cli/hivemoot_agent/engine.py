@@ -837,8 +837,9 @@ def _extract_response(output: str) -> str:
     if not output:
         return ""
 
-    # Try structured extraction (Claude result, Codex item.completed).
+    # Try structured extraction.
     result = ""
+    opencode_texts: list[str] = []
     for line in output.strip().split("\n"):
         line = line.strip()
         if not line:
@@ -847,18 +848,30 @@ def _extract_response(output: str) -> str:
             obj = json.loads(line)
         except json.JSONDecodeError:
             continue
+        # Claude: {"type": "result", "result": "..."}
         if obj.get("type") == "result":
             candidate = obj.get("result", "")
             if candidate:
                 result = candidate
+        # Codex: {"type": "item.completed", "item": {"type": "agent_message", "text": "..."}}
         if obj.get("type") == "item.completed":
             item = obj.get("item", {})
             if item.get("type") == "agent_message":
                 text = item.get("text", "")
                 if text:
                     result = text
+        # OpenCode (--format json): {"type": "text", "text": "...", "synthetic": false}
+        # Each text event fires after the part is complete; synthetic=true marks
+        # injected system text (e.g. tool result summaries), not the agent response.
+        if obj.get("type") == "text" and not obj.get("synthetic", False):
+            text = obj.get("text", "")
+            if text:
+                opencode_texts.append(text)
+
     if result:
         return result
+    if opencode_texts:
+        return "".join(opencode_texts)
 
     # Fallback: longest non-JSON line.
     best = ""
