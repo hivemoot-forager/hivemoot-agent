@@ -4,11 +4,13 @@ import json
 import os
 import sys
 import subprocess
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, call
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from hivemoot_agent.engine import Engine, _extract_response, _load_file_secrets
+from hivemoot_agent.plugins import registry
+from hivemoot_agent.plugins.interfaces import PluginConfig
 
 
 # ── _extract_response tests ───────────────────────────────────────
@@ -115,6 +117,98 @@ def test_oneshot_failure():
             engine = Engine()
             code = engine.oneshot(prompt="Bad task")
             assert code == 1
+
+
+# ── Plugin lifecycle tests ────────────────────────────────────────
+
+
+class _SpyPlugin:
+    """Plugin that records lifecycle call order."""
+
+    def __init__(self) -> None:
+        self.name = "spy"
+        self.version = "0.0.1"
+        self.description = "lifecycle spy"
+        self.calls: list[str] = []
+
+    def validate(self, config: PluginConfig) -> list[str]:
+        return []
+
+    def setup(self, config: PluginConfig) -> None:
+        self.calls.append("setup")
+
+    def triggers(self) -> list:
+        return []
+
+    def system_prompt(self, config: PluginConfig) -> str:
+        return "spy prompt"
+
+    def on_job_started(self, job, config: PluginConfig) -> None:
+        self.calls.append("on_job_started")
+
+    def on_job_finished(self, job, result, config: PluginConfig) -> None:
+        self.calls.append("on_job_finished")
+
+
+def test_oneshot_calls_on_job_started_before_subprocess():
+    """on_job_started() must fire before the subprocess in oneshot mode."""
+    spy = _SpyPlugin()
+    registry._plugins.clear()
+    registry._configs.clear()
+    registry.register(spy)
+
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = '{"type":"result","result":"done"}\n'
+    mock_result.stderr = ""
+
+    subprocess_calls: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        subprocess_calls.append("subprocess.run")
+        return mock_result
+
+    env = {"AGENT_PROVIDER": "claude", "AGENT_PLUGINS": "spy"}
+    with patch("subprocess.run", side_effect=fake_run):
+        with patch.dict(os.environ, env, clear=False):
+            engine = Engine()
+            code = engine.oneshot(prompt="test")
+
+    assert code == 0
+    # setup → on_job_started → subprocess → on_job_finished
+    assert spy.calls == ["setup", "on_job_started", "on_job_finished"]
+    assert subprocess_calls == ["subprocess.run"]
+    # subprocess must have run between on_job_started and on_job_finished
+    started_idx = spy.calls.index("on_job_started")
+    finished_idx = spy.calls.index("on_job_finished")
+    assert started_idx < finished_idx
+
+
+def test_oneshot_without_plugins_skips_lifecycle_hooks():
+    """Without AGENT_PLUGINS, lifecycle hooks must not fire."""
+    spy = _SpyPlugin()
+    registry._plugins.clear()
+    registry._configs.clear()
+    registry.register(spy)
+
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = ""
+    mock_result.stderr = ""
+
+    env = {"AGENT_PROVIDER": "claude"}
+    # Remove AGENT_PLUGINS so plugins are not loaded.
+    filtered = {k: v for k, v in os.environ.items() if k != "AGENT_PLUGINS"}
+    filtered.update(env)
+
+    with patch("subprocess.run", return_value=mock_result):
+        with patch.dict(os.environ, filtered, clear=True):
+            engine = Engine()
+            code = engine.oneshot(prompt="test")
+
+    assert code == 0
+    # No plugin lifecycle calls when AGENT_PLUGINS is unset.
+    assert spy.calls == []
 
 
 if __name__ == "__main__":

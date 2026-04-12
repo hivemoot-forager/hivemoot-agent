@@ -257,6 +257,13 @@ class Engine:
             file=sys.stderr, flush=True,
         )
 
+        # Fire on_job_started for each plugin before the agent runs,
+        # matching the run_agent() lifecycle contract.
+        if plugins:
+            for name, plugin in plugins.items():
+                plugin_config = registry.config_for(name)
+                plugin.on_job_started(job, plugin_config)
+
         stdout = ""
         try:
             proc = subprocess.run(
