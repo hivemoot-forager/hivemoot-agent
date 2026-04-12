@@ -162,10 +162,11 @@ def test_oneshot_calls_on_job_started_before_subprocess():
     mock_result.stdout = '{"type":"result","result":"done"}\n'
     mock_result.stderr = ""
 
-    subprocess_calls: list[str] = []
-
     def fake_run(cmd, **kwargs):
-        subprocess_calls.append("subprocess.run")
+        # Record in the same ordered log as plugin lifecycle calls so the
+        # final assertion proves subprocess.run ran between on_job_started
+        # and on_job_finished, not just that those two hooks are ordered.
+        spy.calls.append("subprocess.run")
         return mock_result
 
     env = {"AGENT_PROVIDER": "claude", "AGENT_PLUGINS": "spy"}
@@ -175,13 +176,8 @@ def test_oneshot_calls_on_job_started_before_subprocess():
             code = engine.oneshot(prompt="test")
 
     assert code == 0
-    # setup → on_job_started → subprocess → on_job_finished
-    assert spy.calls == ["setup", "on_job_started", "on_job_finished"]
-    assert subprocess_calls == ["subprocess.run"]
-    # subprocess must have run between on_job_started and on_job_finished
-    started_idx = spy.calls.index("on_job_started")
-    finished_idx = spy.calls.index("on_job_finished")
-    assert started_idx < finished_idx
+    # Single ordered assertion: setup → on_job_started → subprocess.run → on_job_finished
+    assert spy.calls == ["setup", "on_job_started", "subprocess.run", "on_job_finished"]
 
 
 def test_oneshot_without_plugins_skips_lifecycle_hooks():
