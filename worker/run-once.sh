@@ -311,6 +311,7 @@ if ! effective_auth_mode="$(resolve_effective_auth_mode "$provider" "$auth_mode"
 fi
 
 validate_workspace_root "$workspace_root"
+validate_target_repo "$target_repo"
 
 # When REPO_DIR/LOG_DIR are set externally (run-loop.sh or the controller),
 # isolation is handled by the caller. Otherwise, generate a JOB_ID to
