@@ -1,8 +1,19 @@
 # ADR-001: Controller Runtime Migration
 
-**Status:** Accepted
+**Status:** Superseded by [ADR-002](002-plugin-architecture.md)
 **Date:** 2026-02-20
+**Superseded:** 2026-04-18
 **Issue:** [#89](https://github.com/hivemoot/hivemoot-agent/issues/89)
+
+> **Note (2026-04-18):** The migration this ADR anticipated happened ahead of
+> schedule, driven by the plugin architecture adoption documented in ADR-002.
+> The host-side shell supervisor was retired in PR #579 as part of making the
+> container entrypoint plugin-agnostic (`hivemoot-agent run` daemon mode).
+> The target language ended up being **Python** (not Go as recommended below)
+> because the plugin engine was already Python and cross-language consistency
+> outweighed the Go Docker-client advantage. The trigger analysis below remains
+> historically accurate; the migration plan (M1–M3) was not followed because
+> ADR-002 rendered it moot.
 
 ## Context
 
