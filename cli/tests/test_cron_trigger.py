@@ -489,57 +489,6 @@ class JitterBehaviorTests(unittest.TestCase):
 class BackoffTests(unittest.TestCase):
     """Exponential backoff on quota/auth failures."""
 
-    def _run_one_fire(
-        self,
-        dispatch_result: AgentResult,
-        base: datetime,
-        now_after: datetime,
-    ) -> dict:
-        """Run trigger for one dispatch cycle; return next_fires dict."""
-        trig = CronTrigger(MagicMock())
-        cfg = _make_cfg([{"name": "job", "schedule": "@every 1h", "prompt": "p"}])
-
-        captured: dict = {}
-
-        def dispatch_once(job):
-            return dispatch_result
-
-        dispatcher = MagicMock()
-        dispatcher.dispatch.side_effect = dispatch_once
-
-        from hivemoot_agent.plugins_builtin.cron import expression as expr_mod
-
-        # Calls: seed, top-of-loop (past fire), post-wait, now_after.
-        past_fire = base + timedelta(hours=2)
-        call_times = iter([base, past_fire, past_fire, now_after])
-
-        import types
-
-        def patched_start(orig_start, trig_ref, cfg_ref, disp_ref):
-            orig = orig_start.__func__
-
-            def wrapped(self, config, dispatcher):
-                orig(self, config, dispatcher)
-
-            return wrapped
-
-        stop_called = threading.Event()
-
-        real_dispatch = dispatcher.dispatch.side_effect
-
-        def dispatch_and_stop(job):
-            result = real_dispatch(job)
-            trig.stop()
-            return result
-
-        dispatcher.dispatch.side_effect = dispatch_and_stop
-
-        with patch.object(expr_mod, "now_utc", lambda: next(call_times)):
-            with patch("sys.stderr", io.StringIO()) as stderr:
-                trig.start(cfg, dispatcher)
-
-        return {"stderr": stderr.getvalue() if isinstance(stderr, io.StringIO) else ""}
-
     def test_quota_failure_applies_backoff(self) -> None:
         trig = CronTrigger(MagicMock())
         cfg = _make_cfg(
@@ -819,6 +768,77 @@ class BackoffTests(unittest.TestCase):
             logged_next, two_ticks_out,
             f"expected next fire after {two_ticks_out} (skipping one cycle); "
             f"got {logged_next}",
+        )
+
+    def test_none_dispatch_preserves_active_quota_backoff(self) -> None:
+        """dispatch() returning None must not clear active quota backoff.
+
+        Regression test for the P1 bug where the original `else` branch fired
+        for `result is None`, calling `quota_backoff.pop()` and erasing an
+        active backoff written by a prior quota failure.  Concrete failure path:
+        quota hit → backoff set → next fire deferred → dispatch raises exception
+        (None) → backoff cleared → crash loop resumes on normal schedule.
+        """
+        from hivemoot_agent.plugins_builtin.cron import expression as expr_mod
+
+        trig = CronTrigger(MagicMock())
+        cfg = _make_cfg(
+            [{"name": "job", "schedule": "@every 1h", "prompt": "p"}],
+            quota_backoff_secs=7200, quota_backoff_max_secs=86400,
+        )
+
+        fire_count = {"n": 0}
+        base = datetime(2026, 4, 18, 12, 0, tzinfo=timezone.utc)
+        # First fire: exactly at scheduled time (base+1h), quota failure.
+        first_fire = base + timedelta(hours=1)
+        after_first = first_fire + timedelta(seconds=1)
+        # After quota failure: next_fires["job"] = max(base+2h, after_first+7200s)
+        # = max(base+2h, base+1h+1s+2h) = base+3h+1s.
+        # Second fire: arrive exactly at that deferred time so delay=0.
+        second_fire = base + timedelta(hours=3, seconds=1)
+        after_second = second_fire + timedelta(seconds=1)
+
+        def dispatch(job):
+            fire_count["n"] += 1
+            if fire_count["n"] == 1:
+                # First run: quota failure — backoff written.
+                return AgentResult(exit_code=1, response="", failure_kind="quota")
+            # Second run: dispatch exception → None — must preserve backoff.
+            trig.stop()
+            return None
+
+        dispatcher = MagicMock()
+        dispatcher.dispatch.side_effect = dispatch
+
+        # now_utc() call sequence (2 calls per loop iteration + 1 seed + 1
+        # now_after per fired schedule):
+        #   seed, iter1-top, iter1-post-sleep, iter1-now_after,
+        #   iter2-top, iter2-post-sleep, iter2-now_after
+        call_times = iter([
+            base,
+            first_fire, first_fire, after_first,
+            second_fire, second_fire, after_second,
+        ])
+
+        stderr_io = io.StringIO()
+        with patch.object(expr_mod, "now_utc", lambda: next(call_times)):
+            with patch("sys.stderr", stderr_io):
+                trig.start(cfg, dispatcher)
+
+        output = stderr_io.getvalue()
+        # First fire: quota failure → backoff applied.
+        self.assertIn("quota failure", output)
+        self.assertIn("backing off 7200s", output)
+        # Second fire returned None — no second "backing off" line means the
+        # None path did not escalate the backoff, and more importantly, it did
+        # not clear it via the old `else` branch.  If clearing had occurred,
+        # the next quota failure would show "backing off 7200s" (reset to floor)
+        # instead of "backing off 14400s" (doubled).
+        backoff_lines = [l for l in output.splitlines() if "backing off" in l]
+        self.assertEqual(
+            len(backoff_lines), 1,
+            f"expected exactly one 'backing off' log (from quota failure); "
+            f"got {len(backoff_lines)}: {backoff_lines}",
         )
 
 

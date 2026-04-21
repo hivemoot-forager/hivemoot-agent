@@ -158,9 +158,28 @@ class CronTrigger:
                 result = self._fire_one(schedule, dispatcher)
                 now_after = _expression_mod.now_utc()
 
-                if result is not None and result.failure_kind in (
-                    "quota", "rate_limited", "auth"
-                ):
+                if result is None:
+                    # dispatch raised an exception — provider state unknown.
+                    # Preserve any active quota backoff; just advance the
+                    # schedule to its next normal tick.  Same coalesce logic
+                    # as the success path so overrun schedules don't replay.
+                    last_fired = next_fires[schedule.name]
+                    next_effective = _compute_next_fire(schedule, last_fired)
+                    skipped = 0
+                    while next_effective <= now_after:
+                        next_effective = _compute_next_fire(
+                            schedule, next_effective,
+                        )
+                        skipped += 1
+                    if skipped:
+                        print(
+                            f"[cron] {schedule.name}: coalesced {skipped} "
+                            f"missed tick(s) (previous run overran cadence); "
+                            f"next fire at {next_effective.isoformat()}",
+                            file=sys.stderr, flush=True,
+                        )
+                    next_fires[schedule.name] = next_effective
+                elif result.failure_kind in ("quota", "rate_limited", "auth"):
                     current = quota_backoff.get(schedule.name, 0)
                     new_delay = (
                         cfg.quota_backoff_secs
