@@ -94,14 +94,22 @@ class CronConfig(StrictPluginConfig):
         ),
     )
     quota_backoff_secs: int = Field(
-        default=600,
+        default=7200,
         ge=0,
-        description="Base backoff delay (seconds) when a job fails with quota/auth error.",
+        description=(
+            "Base backoff delay (seconds) on first quota/auth failure.  "
+            "Default 7200 (2h) guarantees at least one skipped cycle for "
+            "the common hourly schedule and covers 1–2h provider quota "
+            "reset windows.  Set to 0 to disable."
+        ),
     )
     quota_backoff_max_secs: int = Field(
-        default=3600,
+        default=86400,
         ge=0,
-        description="Maximum backoff delay (seconds) for consecutive quota/auth failures.",
+        description=(
+            "Maximum backoff delay (seconds) for consecutive quota/auth failures.  "
+            "Default 86400 (24h) caps retries for daily billing limits."
+        ),
     )
 
     @field_validator("schedules")

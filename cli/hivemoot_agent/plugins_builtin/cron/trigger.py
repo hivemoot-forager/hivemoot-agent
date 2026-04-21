@@ -168,9 +168,16 @@ class CronTrigger:
                         else min(current * 2, cfg.quota_backoff_max_secs)
                     )
                     quota_backoff[schedule.name] = new_delay
-                    next_fires[schedule.name] = now_after + timedelta(
-                        seconds=new_delay
+                    # Take max(normal_next, now + delay) so the backoff
+                    # never fires MORE frequently than the normal schedule.
+                    # Without this, a 600s delay on an hourly schedule
+                    # would retry in 10min instead of waiting for the
+                    # next scheduled tick.
+                    normal_next = _compute_next_fire(
+                        schedule, next_fires[schedule.name]
                     )
+                    backoff_until = now_after + timedelta(seconds=new_delay)
+                    next_fires[schedule.name] = max(normal_next, backoff_until)
                     print(
                         f"[cron] {schedule.name}: {result.failure_kind} failure; "
                         f"backing off {new_delay}s "

@@ -24,8 +24,8 @@ from hivemoot_agent.plugins_builtin.cron.trigger import (
 )
 
 
-def _make_cfg(entries: list[dict]) -> PluginConfig:
-    typed = CronConfig(schedules=[ScheduleEntry(**e) for e in entries])
+def _make_cfg(entries: list[dict], **cron_kwargs) -> PluginConfig:
+    typed = CronConfig(schedules=[ScheduleEntry(**e) for e in entries], **cron_kwargs)
     return PluginConfig(name="cron", settings={}, typed=typed)
 
 
@@ -542,7 +542,10 @@ class BackoffTests(unittest.TestCase):
 
     def test_quota_failure_applies_backoff(self) -> None:
         trig = CronTrigger(MagicMock())
-        cfg = _make_cfg([{"name": "job", "schedule": "@every 1h", "prompt": "p"}])
+        cfg = _make_cfg(
+            [{"name": "job", "schedule": "@every 1h", "prompt": "p"}],
+            quota_backoff_secs=600, quota_backoff_max_secs=3600,
+        )
 
         fire_count = {"n": 0}
         next_fire_after_backoff: list[datetime] = []
@@ -574,7 +577,10 @@ class BackoffTests(unittest.TestCase):
 
     def test_consecutive_quota_failures_double_backoff(self) -> None:
         trig = CronTrigger(MagicMock())
-        cfg = _make_cfg([{"name": "job", "schedule": "@every 1h", "prompt": "p"}])
+        cfg = _make_cfg(
+            [{"name": "job", "schedule": "@every 1h", "prompt": "p"}],
+            quota_backoff_secs=600, quota_backoff_max_secs=3600,
+        )
 
         fire_count = {"n": 0}
 
@@ -616,7 +622,10 @@ class BackoffTests(unittest.TestCase):
 
     def test_backoff_resets_on_success(self) -> None:
         trig = CronTrigger(MagicMock())
-        cfg = _make_cfg([{"name": "job", "schedule": "@every 1h", "prompt": "p"}])
+        cfg = _make_cfg(
+            [{"name": "job", "schedule": "@every 1h", "prompt": "p"}],
+            quota_backoff_secs=600, quota_backoff_max_secs=3600,
+        )
 
         fire_count = {"n": 0}
 
@@ -658,7 +667,10 @@ class BackoffTests(unittest.TestCase):
 
     def test_rate_limited_applies_backoff(self) -> None:
         trig = CronTrigger(MagicMock())
-        cfg = _make_cfg([{"name": "job", "schedule": "@every 1h", "prompt": "p"}])
+        cfg = _make_cfg(
+            [{"name": "job", "schedule": "@every 1h", "prompt": "p"}],
+            quota_backoff_secs=600, quota_backoff_max_secs=3600,
+        )
 
         from hivemoot_agent.plugins_builtin.cron import expression as expr_mod
         base = datetime(2026, 4, 18, 12, 0, tzinfo=timezone.utc)
@@ -684,7 +696,10 @@ class BackoffTests(unittest.TestCase):
 
     def test_no_backoff_on_transient_failure(self) -> None:
         trig = CronTrigger(MagicMock())
-        cfg = _make_cfg([{"name": "job", "schedule": "@every 1h", "prompt": "p"}])
+        cfg = _make_cfg(
+            [{"name": "job", "schedule": "@every 1h", "prompt": "p"}],
+            quota_backoff_secs=600, quota_backoff_max_secs=3600,
+        )
 
         from hivemoot_agent.plugins_builtin.cron import expression as expr_mod
         base = datetime(2026, 4, 18, 12, 0, tzinfo=timezone.utc)
@@ -707,6 +722,104 @@ class BackoffTests(unittest.TestCase):
 
         output = stderr_io.getvalue()
         self.assertNotIn("backing off", output)
+
+    def test_backoff_never_fires_sooner_than_normal_schedule(self) -> None:
+        """max(normal_next, now+delay) — backoff must not accelerate the schedule.
+
+        Regression test for the initial implementation that used
+        ``now + delay`` without max(), which for a 600s backoff on an
+        hourly schedule would retry in 10 min instead of waiting for
+        the next scheduled tick.
+        """
+        trig = CronTrigger(MagicMock())
+        # Small explicit backoff (300s) that is much less than the 1h interval.
+        cfg = _make_cfg(
+            [{"name": "job", "schedule": "@every 1h", "prompt": "p"}],
+            quota_backoff_secs=300, quota_backoff_max_secs=3600,
+        )
+
+        from hivemoot_agent.plugins_builtin.cron import expression as expr_mod
+
+        base = datetime(2026, 4, 18, 12, 0, tzinfo=timezone.utc)
+        # Fire at exactly the first scheduled tick (on time, not late).
+        on_time_fire = base + timedelta(hours=1)
+        # Job finishes 5 seconds after the scheduled tick.
+        now_after = on_time_fire + timedelta(seconds=5)
+
+        def dispatch(job):
+            trig.stop()
+            return AgentResult(exit_code=1, response="", failure_kind="quota")
+
+        dispatcher = MagicMock()
+        dispatcher.dispatch.side_effect = dispatch
+
+        # Calls: seed, top-of-loop, post-wait, now_after.
+        call_times = iter([base, on_time_fire, on_time_fire, now_after])
+        stderr_io = io.StringIO()
+        with patch.object(expr_mod, "now_utc", lambda: next(call_times)):
+            with patch("sys.stderr", stderr_io):
+                trig.start(cfg, dispatcher)
+
+        output = stderr_io.getvalue()
+        self.assertIn("quota failure", output)
+        self.assertIn("backing off 300s", output)
+        # The next fire time must be >= next normal cron tick (base+2h),
+        # NOT now+300s (= base+1h+5s+300s ≈ base+1h5m5s).
+        normal_next = base + timedelta(hours=2)
+        # Extract the isoformat from the log line.
+        import re
+        m = re.search(r"next fire at ([^\)]+)\)", output)
+        self.assertIsNotNone(m, "expected 'next fire at ...' in log")
+        logged_next = datetime.fromisoformat(m.group(1))
+        self.assertGreaterEqual(
+            logged_next, normal_next,
+            f"backoff scheduled next fire at {logged_next}, before normal "
+            f"next tick {normal_next} — backoff must not accelerate schedule",
+        )
+
+    def test_default_backoff_skips_at_least_one_hourly_cycle(self) -> None:
+        """Default quota_backoff_secs=7200 guarantees ≥1 skipped cycle for hourly schedules.
+
+        At default 7200s floor: max(next_hour, now+7200) = now+7200 > next_hour for
+        any failure within the first hour.  This is the timing guarantee from #392.
+        """
+        trig = CronTrigger(MagicMock())
+        # Use default config (7200/86400).
+        cfg = _make_cfg([{"name": "job", "schedule": "@every 1h", "prompt": "p"}])
+
+        from hivemoot_agent.plugins_builtin.cron import expression as expr_mod
+
+        base = datetime(2026, 4, 18, 12, 0, tzinfo=timezone.utc)
+        on_time_fire = base + timedelta(hours=1)
+        now_after = on_time_fire + timedelta(seconds=5)
+
+        def dispatch(job):
+            trig.stop()
+            return AgentResult(exit_code=1, response="", failure_kind="quota")
+
+        dispatcher = MagicMock()
+        dispatcher.dispatch.side_effect = dispatch
+
+        call_times = iter([base, on_time_fire, on_time_fire, now_after])
+        stderr_io = io.StringIO()
+        with patch.object(expr_mod, "now_utc", lambda: next(call_times)):
+            with patch("sys.stderr", stderr_io):
+                trig.start(cfg, dispatcher)
+
+        output = stderr_io.getvalue()
+        # Extract the scheduled next fire time.
+        import re
+        m = re.search(r"next fire at ([^\)]+)\)", output)
+        self.assertIsNotNone(m, "expected 'next fire at ...' in log")
+        logged_next = datetime.fromisoformat(m.group(1))
+        # With 7200s floor: next fire at now+7200 = base+1h+5s+7200s
+        # Normal next tick = base+2h.  7200s > 3600s so we skip the 2h tick.
+        two_ticks_out = base + timedelta(hours=2)
+        self.assertGreater(
+            logged_next, two_ticks_out,
+            f"expected next fire after {two_ticks_out} (skipping one cycle); "
+            f"got {logged_next}",
+        )
 
 
 if __name__ == "__main__":
