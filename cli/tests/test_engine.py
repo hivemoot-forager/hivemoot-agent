@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from hivemoot_agent.engine import (
     Engine,
     _append_agent_memory,
+    _classify_failure,
     _extract_response,
     _load_file_secrets,
 )
@@ -590,6 +591,52 @@ def test_response_extracted_for_claude():
             response = _extract_response(stdout) if stdout else ""
 
     assert response == "Final Claude answer"
+
+
+# ── _classify_failure tests ───────────────────────────────────────
+
+
+def test_classify_failure_quota_patterns():
+    for pattern in [
+        "TerminalQuotaError",
+        "quota exhausted",
+        "billing_hard_limit_reached",
+        "You have exhausted your capacity",
+        "RESOURCE_EXHAUSTED",
+        "resource_exhausted",
+    ]:
+        assert _classify_failure(pattern) == "quota", f"pattern {pattern!r} not classified as quota"
+
+
+def test_classify_failure_rate_limited_patterns():
+    for pattern in [
+        "rate_limit_exceeded",
+        "rate_limit_error",
+        "overloaded_error",
+        "429 Too Many Requests",
+        "RateLimitError",
+    ]:
+        assert _classify_failure(pattern) == "rate_limited", f"pattern {pattern!r} not classified as rate_limited"
+
+
+def test_classify_failure_auth_patterns():
+    for pattern in [
+        "authentication_error",
+        "invalid_api_key",
+        "billing_not_active",
+    ]:
+        assert _classify_failure(pattern) == "auth", f"pattern {pattern!r} not classified as auth"
+
+
+def test_classify_failure_empty_on_no_match():
+    assert _classify_failure("some random error output") == ""
+    assert _classify_failure("") == ""
+
+
+def test_classify_failure_tail_window_only():
+    padding = "x" * 3000
+    assert _classify_failure(padding + "quota exhausted") == "quota"
+    assert _classify_failure("quota exhausted" + padding) == ""
 
 
 if __name__ == "__main__":

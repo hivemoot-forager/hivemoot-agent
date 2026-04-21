@@ -93,6 +93,16 @@ class CronConfig(StrictPluginConfig):
             "anything is explicitly safe."
         ),
     )
+    quota_backoff_secs: int = Field(
+        default=600,
+        ge=0,
+        description="Base backoff delay (seconds) when a job fails with quota/auth error.",
+    )
+    quota_backoff_max_secs: int = Field(
+        default=3600,
+        ge=0,
+        description="Maximum backoff delay (seconds) for consecutive quota/auth failures.",
+    )
 
     @field_validator("schedules")
     @classmethod

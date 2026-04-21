@@ -40,6 +40,43 @@ _RESUME_STALENESS_NOTE = (
 _DEFAULT_AGENT_MEMORY_DIR = "/home/node/.hivemoot/memory"
 _EXTERNAL_SKILLS_DIR = "/opt/hivemoot-agent/skills"
 
+_TAIL_WINDOW = 2000
+
+_QUOTA_PATTERNS = (
+    "TerminalQuotaError",
+    "quota exhausted",
+    "billing_hard_limit_reached",
+    "You have exhausted your capacity",
+    "RESOURCE_EXHAUSTED",
+    "resource_exhausted",
+)
+_RATE_LIMITED_PATTERNS = (
+    "rate_limit_exceeded",
+    "rate_limit_error",
+    "overloaded_error",
+    "429 Too Many Requests",
+    "RateLimitError",
+)
+_AUTH_PATTERNS = (
+    "authentication_error",
+    "invalid_api_key",
+    "billing_not_active",
+)
+
+
+def _classify_failure(text: str) -> str:
+    tail = text[-_TAIL_WINDOW:]
+    for p in _QUOTA_PATTERNS:
+        if p in tail:
+            return "quota"
+    for p in _RATE_LIMITED_PATTERNS:
+        if p in tail:
+            return "rate_limited"
+    for p in _AUTH_PATTERNS:
+        if p in tail:
+            return "auth"
+    return ""
+
 # Root system prompt lives next to this module so it ships inside the
 # runtime image and is always available regardless of deployer config.
 _ROOT_SYSTEM_PROMPT_PATH = (
@@ -1115,7 +1152,11 @@ class Engine:
                 os.environ.pop("AGENT_LAST_RUN_LOG", None)
                 config.settings.pop("AGENT_LAST_RUN_LOG", None)
 
-            result = AgentResult(exit_code=exit_code, response=response)
+            result = AgentResult(
+                exit_code=exit_code,
+                response=response,
+                failure_kind=_classify_failure(stdout) if exit_code != 0 else "",
+            )
             return result
         finally:
             # Final outcome MUST be reported.  on_job_finished is
@@ -1545,12 +1586,11 @@ class _PluginDispatcher:
         self._config = config
         self._plugin_name = plugin_name
 
-    def dispatch(self, job: Job) -> bool:
+    def dispatch(self, job: Job) -> "AgentResult | None":
         try:
-            result = self._engine.run_agent(
+            return self._engine.run_agent(
                 self._plugin, job, self._config, self._plugin_name
             )
-            return result.exit_code == 0
         except Exception as exc:
             print(f"[engine] dispatch failed: {exc}", file=sys.stderr)
-            return False
+            return None

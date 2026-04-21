@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from hivemoot_agent.plugins.interfaces import AgentResult, Job, PluginConfig
 from hivemoot_agent.plugins_builtin.cron import CronPlugin, create_plugin
+from hivemoot_agent.plugins_builtin.cron.config import CronConfig, ScheduleEntry
 from hivemoot_agent.plugins_builtin.cron.schedule import parse_schedules
 from hivemoot_agent.plugins_builtin.cron.trigger import (
     CronTrigger,
@@ -23,12 +24,9 @@ from hivemoot_agent.plugins_builtin.cron.trigger import (
 )
 
 
-def _cfg_settings(entries: list[dict]) -> dict:
-    return {"CRON_SCHEDULES_JSON": json.dumps(entries)}
-
-
 def _make_cfg(entries: list[dict]) -> PluginConfig:
-    return PluginConfig(name="cron", settings=_cfg_settings(entries))
+    typed = CronConfig(schedules=[ScheduleEntry(**e) for e in entries])
+    return PluginConfig(name="cron", settings={}, typed=typed)
 
 
 # ── Plugin lifecycle ──────────────────────────────────────────────
@@ -42,14 +40,11 @@ class PluginLifecycleTests(unittest.TestCase):
             [],
         )
 
-    def test_validate_reports_config_errors(self) -> None:
+    def test_validate_always_passes_in_adr003(self) -> None:
         plugin = create_plugin()
-        cfg = PluginConfig(name="cron", settings={
-            "CRON_SCHEDULES_JSON": '[{"name":"x","schedule":"bad","prompt":"p"}]',
-        })
+        cfg = PluginConfig(name="cron", settings={}, typed=CronConfig())
         errors = plugin.validate(cfg)
-        self.assertEqual(len(errors), 1)
-        self.assertIn("x", errors[0])
+        self.assertEqual(errors, [])
 
     def test_triggers_returns_single_instance(self) -> None:
         plugin = create_plugin()
@@ -91,12 +86,12 @@ class TriggerValidationTests(unittest.TestCase):
         ])
         self.assertEqual(trig.validate(cfg), [])
 
-    def test_invalid_config_fails(self) -> None:
-        trig = CronTrigger(MagicMock())
-        cfg = _make_cfg([
-            {"name": "a", "schedule": "not a cron", "prompt": "p"},
-        ])
-        self.assertNotEqual(trig.validate(cfg), [])
+    def test_invalid_schedule_raises_at_config_construction(self) -> None:
+        from pydantic import ValidationError
+        with self.assertRaises(ValidationError):
+            CronConfig(schedules=[ScheduleEntry(
+                name="a", schedule="not a cron", prompt="p",
+            )])
 
 
 # ── Trigger dispatch loop ────────────────────────────────────────
@@ -106,7 +101,7 @@ class TriggerDispatchTests(unittest.TestCase):
     def test_empty_config_idles(self) -> None:
         """No schedules → blocks until stop, does not crash."""
         trig = CronTrigger(MagicMock())
-        cfg = PluginConfig(name="cron", settings={})
+        cfg = PluginConfig(name="cron", settings={}, typed=CronConfig())
         dispatcher = MagicMock()
 
         done = threading.Event()
@@ -132,7 +127,7 @@ class TriggerDispatchTests(unittest.TestCase):
 
         def stop_after_first(_job):
             trig.stop()
-            return True
+            return AgentResult(exit_code=0, response="")
         dispatcher.dispatch.side_effect = stop_after_first
 
         # The seed call sets next_fire to (seed + 1h); subsequent calls
@@ -164,7 +159,7 @@ class TriggerDispatchTests(unittest.TestCase):
 
         def stop_after_first(_job):
             trig.stop()
-            return True
+            return AgentResult(exit_code=0, response="")
         dispatcher.dispatch.side_effect = stop_after_first
 
         from hivemoot_agent.plugins_builtin.cron import expression as expr_mod
@@ -194,7 +189,7 @@ class TriggerDispatchTests(unittest.TestCase):
             dispatched.append(job.metadata["cron"]["schedule_name"])
             if len(dispatched) >= 2:
                 trig.stop()
-            return True
+            return AgentResult(exit_code=0, response="")
         dispatcher.dispatch.side_effect = record
 
         from hivemoot_agent.plugins_builtin.cron import expression as expr_mod
@@ -234,15 +229,15 @@ class TriggerDispatchTests(unittest.TestCase):
         dispatcher.dispatch.assert_not_called()
 
     def test_malformed_config_logs_and_returns(self) -> None:
-        """Runtime malformed config (snuck past validate) is caught gracefully."""
+        """typed=None (config not loaded) is caught gracefully."""
         trig = CronTrigger(MagicMock())
-        cfg = PluginConfig(name="cron", settings={
-            "CRON_SCHEDULES_JSON": "not json",
-        })
+        cfg = PluginConfig(name="cron", settings={}, typed=None)
         dispatcher = MagicMock()
-        with patch("sys.stderr", io.StringIO()):
+        stderr_io = io.StringIO()
+        with patch("sys.stderr", stderr_io):
             trig.start(cfg, dispatcher)
         dispatcher.dispatch.assert_not_called()
+        self.assertIn("config.typed is None", stderr_io.getvalue())
 
     def test_slow_run_coalesces_missed_ticks(self) -> None:
         """A previous run that overran the cadence must NOT produce a
@@ -264,7 +259,7 @@ class TriggerDispatchTests(unittest.TestCase):
         def stop_after_first(_job):
             dispatch_count["n"] += 1
             trig.stop()
-            return True
+            return AgentResult(exit_code=0, response="")
         dispatcher.dispatch.side_effect = stop_after_first
 
         from hivemoot_agent.plugins_builtin.cron import expression as expr_mod
@@ -301,7 +296,7 @@ class TriggerDispatchTests(unittest.TestCase):
 
         def stop_after_first(_job):
             trig.stop()
-            return True
+            return AgentResult(exit_code=0, response="")
         dispatcher.dispatch.side_effect = stop_after_first
 
         from hivemoot_agent.plugins_builtin.cron import expression as expr_mod
@@ -486,6 +481,232 @@ class JitterBehaviorTests(unittest.TestCase):
         base = datetime(2026, 4, 18, 12, 0, tzinfo=timezone.utc)
         fire = _compute_next_fire(schedules[0], base)
         self.assertEqual(fire, base + timedelta(hours=1))
+
+
+# ── Backoff tests ────────────────────────────────────────────────
+
+
+class BackoffTests(unittest.TestCase):
+    """Exponential backoff on quota/auth failures."""
+
+    def _run_one_fire(
+        self,
+        dispatch_result: AgentResult,
+        base: datetime,
+        now_after: datetime,
+    ) -> dict:
+        """Run trigger for one dispatch cycle; return next_fires dict."""
+        trig = CronTrigger(MagicMock())
+        cfg = _make_cfg([{"name": "job", "schedule": "@every 1h", "prompt": "p"}])
+
+        captured: dict = {}
+
+        def dispatch_once(job):
+            return dispatch_result
+
+        dispatcher = MagicMock()
+        dispatcher.dispatch.side_effect = dispatch_once
+
+        from hivemoot_agent.plugins_builtin.cron import expression as expr_mod
+
+        # Calls: seed, top-of-loop (past fire), post-wait, now_after.
+        past_fire = base + timedelta(hours=2)
+        call_times = iter([base, past_fire, past_fire, now_after])
+
+        import types
+
+        def patched_start(orig_start, trig_ref, cfg_ref, disp_ref):
+            orig = orig_start.__func__
+
+            def wrapped(self, config, dispatcher):
+                orig(self, config, dispatcher)
+
+            return wrapped
+
+        stop_called = threading.Event()
+
+        real_dispatch = dispatcher.dispatch.side_effect
+
+        def dispatch_and_stop(job):
+            result = real_dispatch(job)
+            trig.stop()
+            return result
+
+        dispatcher.dispatch.side_effect = dispatch_and_stop
+
+        with patch.object(expr_mod, "now_utc", lambda: next(call_times)):
+            with patch("sys.stderr", io.StringIO()) as stderr:
+                trig.start(cfg, dispatcher)
+
+        return {"stderr": stderr.getvalue() if isinstance(stderr, io.StringIO) else ""}
+
+    def test_quota_failure_applies_backoff(self) -> None:
+        trig = CronTrigger(MagicMock())
+        cfg = _make_cfg([{"name": "job", "schedule": "@every 1h", "prompt": "p"}])
+
+        fire_count = {"n": 0}
+        next_fire_after_backoff: list[datetime] = []
+
+        from hivemoot_agent.plugins_builtin.cron import expression as expr_mod
+        base = datetime(2026, 4, 18, 12, 0, tzinfo=timezone.utc)
+        past_fire = base + timedelta(hours=2)
+        now_after = base + timedelta(hours=2, seconds=1)
+
+        def dispatch(job):
+            fire_count["n"] += 1
+            trig.stop()
+            return AgentResult(exit_code=1, response="", failure_kind="quota")
+
+        dispatcher = MagicMock()
+        dispatcher.dispatch.side_effect = dispatch
+
+        call_times = iter([base, past_fire, past_fire, now_after])
+        stderr_io = io.StringIO()
+        with patch.object(expr_mod, "now_utc", lambda: next(call_times)):
+            with patch("sys.stderr", stderr_io):
+                trig.start(cfg, dispatcher)
+
+        output = stderr_io.getvalue()
+        self.assertIn("quota failure", output)
+        self.assertIn("backing off 600s", output)
+        expected_next = now_after + timedelta(seconds=600)
+        self.assertIn(expected_next.isoformat(), output)
+
+    def test_consecutive_quota_failures_double_backoff(self) -> None:
+        trig = CronTrigger(MagicMock())
+        cfg = _make_cfg([{"name": "job", "schedule": "@every 1h", "prompt": "p"}])
+
+        fire_count = {"n": 0}
+
+        from hivemoot_agent.plugins_builtin.cron import expression as expr_mod
+        base = datetime(2026, 4, 18, 12, 0, tzinfo=timezone.utc)
+        # First fire at base+2h, second fire at base+2h+600s+1s
+        first_fire = base + timedelta(hours=2)
+        after_first = base + timedelta(hours=2, seconds=1)
+        second_fire = after_first + timedelta(seconds=600)
+        after_second = second_fire + timedelta(seconds=1)
+
+        # now_utc calls for two full dispatch cycles:
+        # seed, top-of-loop-1, post-wait-1, now_after-1,
+        # top-of-loop-2, post-wait-2, now_after-2
+        call_times = iter([
+            base,
+            first_fire, first_fire, after_first,
+            second_fire, second_fire, after_second,
+        ])
+
+        def dispatch(job):
+            fire_count["n"] += 1
+            if fire_count["n"] >= 2:
+                trig.stop()
+            return AgentResult(exit_code=1, response="", failure_kind="quota")
+
+        dispatcher = MagicMock()
+        dispatcher.dispatch.side_effect = dispatch
+
+        stderr_io = io.StringIO()
+        with patch.object(expr_mod, "now_utc", lambda: next(call_times)):
+            with patch("sys.stderr", stderr_io):
+                trig.start(cfg, dispatcher)
+
+        output = stderr_io.getvalue()
+        self.assertEqual(fire_count["n"], 2)
+        self.assertIn("backing off 600s", output)
+        self.assertIn("backing off 1200s", output)
+
+    def test_backoff_resets_on_success(self) -> None:
+        trig = CronTrigger(MagicMock())
+        cfg = _make_cfg([{"name": "job", "schedule": "@every 1h", "prompt": "p"}])
+
+        fire_count = {"n": 0}
+
+        from hivemoot_agent.plugins_builtin.cron import expression as expr_mod
+        base = datetime(2026, 4, 18, 12, 0, tzinfo=timezone.utc)
+        first_fire = base + timedelta(hours=2)
+        after_first = base + timedelta(hours=2, seconds=1)
+        second_fire = after_first + timedelta(seconds=600)
+        after_second = second_fire + timedelta(seconds=1)
+
+        # now_utc: seed, loop1-top, loop1-wait, loop1-after,
+        #          loop2-top, loop2-wait, loop2-after (coalesce probe)
+        call_times = iter([
+            base,
+            first_fire, first_fire, after_first,
+            second_fire, second_fire, after_second,
+        ])
+
+        def dispatch(job):
+            fire_count["n"] += 1
+            if fire_count["n"] >= 2:
+                trig.stop()
+            if fire_count["n"] == 1:
+                return AgentResult(exit_code=1, response="", failure_kind="quota")
+            return AgentResult(exit_code=0, response="ok")
+
+        dispatcher = MagicMock()
+        dispatcher.dispatch.side_effect = dispatch
+
+        stderr_io = io.StringIO()
+        with patch.object(expr_mod, "now_utc", lambda: next(call_times)):
+            with patch("sys.stderr", stderr_io):
+                trig.start(cfg, dispatcher)
+
+        output = stderr_io.getvalue()
+        self.assertEqual(fire_count["n"], 2)
+        self.assertIn("backing off 600s", output)
+        self.assertNotIn("backing off 1200s", output)
+
+    def test_rate_limited_applies_backoff(self) -> None:
+        trig = CronTrigger(MagicMock())
+        cfg = _make_cfg([{"name": "job", "schedule": "@every 1h", "prompt": "p"}])
+
+        from hivemoot_agent.plugins_builtin.cron import expression as expr_mod
+        base = datetime(2026, 4, 18, 12, 0, tzinfo=timezone.utc)
+        past_fire = base + timedelta(hours=2)
+        now_after = base + timedelta(hours=2, seconds=1)
+
+        def dispatch(job):
+            trig.stop()
+            return AgentResult(exit_code=1, response="", failure_kind="rate_limited")
+
+        dispatcher = MagicMock()
+        dispatcher.dispatch.side_effect = dispatch
+
+        call_times = iter([base, past_fire, past_fire, now_after])
+        stderr_io = io.StringIO()
+        with patch.object(expr_mod, "now_utc", lambda: next(call_times)):
+            with patch("sys.stderr", stderr_io):
+                trig.start(cfg, dispatcher)
+
+        output = stderr_io.getvalue()
+        self.assertIn("rate_limited failure", output)
+        self.assertIn("backing off 600s", output)
+
+    def test_no_backoff_on_transient_failure(self) -> None:
+        trig = CronTrigger(MagicMock())
+        cfg = _make_cfg([{"name": "job", "schedule": "@every 1h", "prompt": "p"}])
+
+        from hivemoot_agent.plugins_builtin.cron import expression as expr_mod
+        base = datetime(2026, 4, 18, 12, 0, tzinfo=timezone.utc)
+        past_fire = base + timedelta(hours=2)
+        now_after = base + timedelta(hours=2, seconds=1)
+
+        def dispatch(job):
+            trig.stop()
+            return AgentResult(exit_code=1, response="", failure_kind="")
+
+        dispatcher = MagicMock()
+        dispatcher.dispatch.side_effect = dispatch
+
+        # need extra call for coalesce probe since it follows normal path
+        call_times = iter([base, past_fire, past_fire, now_after, now_after])
+        stderr_io = io.StringIO()
+        with patch.object(expr_mod, "now_utc", lambda: next(call_times)):
+            with patch("sys.stderr", stderr_io):
+                trig.start(cfg, dispatcher)
+
+        output = stderr_io.getvalue()
+        self.assertNotIn("backing off", output)
 
 
 if __name__ == "__main__":

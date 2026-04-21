@@ -86,6 +86,10 @@ class AgentResult:
     response: str
     session_id: str = ""
     duration_secs: int = 0
+    failure_kind: str = ""
+
+    def __bool__(self) -> bool:
+        return self.exit_code == 0
 
 
 # ── Protocols ──────────────────────────────────────────────────────
@@ -94,8 +98,8 @@ class AgentResult:
 class JobDispatcher(Protocol):
     """Callback for triggers to submit jobs to the engine."""
 
-    def dispatch(self, job: Job) -> bool:
-        """Submit a job.  Returns True if accepted."""
+    def dispatch(self, job: Job) -> "AgentResult | None":
+        """Submit a job.  Returns AgentResult on completion, None on error."""
         ...
 
 

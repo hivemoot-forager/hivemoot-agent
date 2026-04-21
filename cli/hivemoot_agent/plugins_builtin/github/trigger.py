@@ -223,8 +223,8 @@ class _GitHubWatchTrigger:
             },
         )
 
-        ok = dispatcher.dispatch(job)
-        if not ok:
+        result = dispatcher.dispatch(job)
+        if not result:
             print(
                 f"[{self.name}] dispatch failed for #{event.display_number}",
                 file=sys.stderr, flush=True,

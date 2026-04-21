@@ -182,8 +182,8 @@ class HivemootTaskTrigger:
                 },
             )
 
-            ok = dispatcher.dispatch(job)
-            if not ok:
+            result = dispatcher.dispatch(job)
+            if not result:
                 print(
                     f"[hivemoot-task] dispatch failed for {claimed.task_id}",
                     file=sys.stderr, flush=True,

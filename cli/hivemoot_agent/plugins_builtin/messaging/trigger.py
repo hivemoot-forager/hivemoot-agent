@@ -217,9 +217,9 @@ class MessagingTrigger:
                 # Always advance the offset — a failed run must never
                 # cause the same user message to be re-processed, or
                 # a persistent error creates an infinite spam loop.
-                ok = dispatcher.dispatch(job)
+                result = dispatcher.dispatch(job)
                 offset = max(offset, update_id + 1)
-                if ok:
+                if result:
                     print(f"[trigger] ok, offset→{offset}", file=sys.stderr, flush=True)
                 else:
                     print(f"[trigger] dispatch failed, offset→{offset}", file=sys.stderr, flush=True)

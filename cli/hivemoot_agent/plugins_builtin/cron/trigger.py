@@ -23,7 +23,7 @@ import threading
 from datetime import datetime, timedelta
 from typing import Any
 
-from hivemoot_agent.plugins.interfaces import Job, JobDispatcher, PluginConfig
+from hivemoot_agent.plugins.interfaces import AgentResult, Job, JobDispatcher, PluginConfig
 from hivemoot_agent.plugins_builtin.cron import expression as _expression_mod
 from hivemoot_agent.plugins_builtin.cron.config import CronConfig, ScheduleEntry
 from hivemoot_agent.plugins_builtin.cron.expression import parse_expression
@@ -87,6 +87,12 @@ class CronTrigger:
 
     def start(self, config: PluginConfig, dispatcher: JobDispatcher) -> None:
         cfg: CronConfig = config.typed
+        if cfg is None:
+            print(
+                "[cron] config.typed is None; trigger cannot start",
+                file=sys.stderr, flush=True,
+            )
+            return
         schedules = [_entry_to_schedule(e) for e in cfg.schedules]
 
         if not schedules:
@@ -120,6 +126,9 @@ class CronTrigger:
         next_fires: dict[str, datetime] = {
             s.name: _compute_next_fire(s, seed_now) for s in schedules
         }
+        # Per-schedule backoff state: name → current backoff seconds.
+        # 0 means no active backoff.
+        quota_backoff: dict[str, int] = {}
 
         while not self._stop_event.is_set():
             now = _expression_mod.now_utc()
@@ -146,36 +155,58 @@ class CronTrigger:
             for schedule in due:
                 if self._stop_event.is_set():
                     return
-                self._fire_one(schedule, dispatcher)
-                # Advance from the effective fire time (see seed
-                # comment above).  If the previous run overran its
-                # cadence, the newly computed cursor can still be in
-                # the past — skip any additional missed ticks in one
-                # hop instead of replaying them as a backlog storm.
-                # Matches the legacy controller's on_duplicate_agent
-                # semantics (one run queued, duplicates dropped while
-                # busy).
-                last_fired = next_fires[schedule.name]
-                next_effective = _compute_next_fire(schedule, last_fired)
+                result = self._fire_one(schedule, dispatcher)
                 now_after = _expression_mod.now_utc()
-                skipped = 0
-                while next_effective <= now_after:
-                    next_effective = _compute_next_fire(
-                        schedule, next_effective,
+
+                if result is not None and result.failure_kind in (
+                    "quota", "rate_limited", "auth"
+                ):
+                    current = quota_backoff.get(schedule.name, 0)
+                    new_delay = (
+                        cfg.quota_backoff_secs
+                        if current == 0
+                        else min(current * 2, cfg.quota_backoff_max_secs)
                     )
-                    skipped += 1
-                if skipped:
+                    quota_backoff[schedule.name] = new_delay
+                    next_fires[schedule.name] = now_after + timedelta(
+                        seconds=new_delay
+                    )
                     print(
-                        f"[cron] {schedule.name}: coalesced {skipped} "
-                        f"missed tick(s) (previous run overran cadence); "
-                        f"next fire at {next_effective.isoformat()}",
+                        f"[cron] {schedule.name}: {result.failure_kind} failure; "
+                        f"backing off {new_delay}s "
+                        f"(next fire at {next_fires[schedule.name].isoformat()})",
                         file=sys.stderr, flush=True,
                     )
-                next_fires[schedule.name] = next_effective
+                else:
+                    quota_backoff.pop(schedule.name, None)
+                    # Advance from the effective fire time (see seed
+                    # comment above).  If the previous run overran its
+                    # cadence, the newly computed cursor can still be in
+                    # the past — skip any additional missed ticks in one
+                    # hop instead of replaying them as a backlog storm.
+                    # Matches the legacy controller's on_duplicate_agent
+                    # semantics (one run queued, duplicates dropped while
+                    # busy).
+                    last_fired = next_fires[schedule.name]
+                    next_effective = _compute_next_fire(schedule, last_fired)
+                    skipped = 0
+                    while next_effective <= now_after:
+                        next_effective = _compute_next_fire(
+                            schedule, next_effective,
+                        )
+                        skipped += 1
+                    if skipped:
+                        print(
+                            f"[cron] {schedule.name}: coalesced {skipped} "
+                            f"missed tick(s) (previous run overran cadence); "
+                            f"next fire at {next_effective.isoformat()}",
+                            file=sys.stderr, flush=True,
+                        )
+                    next_fires[schedule.name] = next_effective
 
     def _fire_one(
         self, schedule: Schedule, dispatcher: JobDispatcher,
-    ) -> None:
+    ) -> AgentResult | None:
         # Jitter is baked into ``next_fires`` at compute time, so the
         # main loop's natural wait absorbs it.  Sleeping here would
         # block *other* schedules that became due during the wait —
@@ -195,12 +226,13 @@ class CronTrigger:
                 },
             },
         )
-        ok = dispatcher.dispatch(job)
-        if not ok:
+        result = dispatcher.dispatch(job)
+        if not result:
             print(
-                f"[cron] {schedule.name}: dispatch returned False",
+                f"[cron] {schedule.name}: dispatch returned failure",
                 file=sys.stderr, flush=True,
             )
+        return result
 
     def _log_startup(self, schedules: list[Schedule]) -> None:
         print(
